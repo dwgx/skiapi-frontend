@@ -10,7 +10,7 @@ import {
   People, Settings, AccountBalanceWallet, ManageAccounts, Redeem,
   RocketLaunch, Chat as ChatIcon,
   ExpandLess, ExpandMore, Menu as MenuIcon, CardMembership,
-  ChevronLeft, Terminal, Layers, Inventory2,
+  ChevronLeft, Terminal, Layers, Inventory2, OpenInNew,
 } from '@mui/icons-material';
 import { useTranslation } from 'react-i18next';
 import TopBar from './TopBar';
@@ -139,6 +139,19 @@ export default function AppLayout() {
         <SidebarSection title={t('管理员')} items={adminSection} collapsed={collapsed} selectedKey={selectedKey} onNav={handleNav} user={user} t={t} />
       </Box>
       <Divider />
+      {/* Classic UI switch */}
+      <Tooltip title={collapsed ? t('经典 UI') : ''} placement="right">
+        <ListItemButton
+          component="a"
+          href="/legacy/"
+          sx={{ minHeight: 36, justifyContent: collapsed ? 'center' : 'initial', px: collapsed ? 2.5 : 2, opacity: 0.6, '&:hover': { opacity: 1 } }}
+        >
+          <ListItemIcon sx={{ minWidth: 0, mr: collapsed ? 0 : 2, justifyContent: 'center', color: 'text.secondary' }}>
+            <OpenInNew sx={{ fontSize: 18 }} />
+          </ListItemIcon>
+          {!collapsed && <ListItemText primary={t('经典 UI')} primaryTypographyProps={{ fontSize: '0.8rem', color: 'text.secondary' }} />}
+        </ListItemButton>
+      </Tooltip>
       <Box sx={{ p: 1, display: 'flex', justifyContent: 'center' }}>
         <IconButton size="small" onClick={() => setCollapsed(c => !c)}>
           <ChevronLeft sx={{ transform: collapsed ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />

@@ -3,9 +3,11 @@
 Build and deploy the frontend to the test VPS.
 
 Usage:
-    python deploy.py              # build + deploy
+    python deploy.py              # build + deploy SKIAPI frontend
     python deploy.py --no-build   # skip build, deploy existing dist/
     python deploy.py --nginx      # also re-write nginx config
+    python deploy.py --legacy     # build + deploy old NewAPI frontend at /legacy/
+    python deploy.py --link-ui    # inject "SKIAPI" button into legacy frontend footer
 """
 import os
 import sys
@@ -24,6 +26,12 @@ from vps import get_ssh, run, upload_file
 DIST_DIR = os.path.join(PROJECT_DIR, 'dist')
 NO_BUILD = '--no-build' in sys.argv
 WRITE_NGINX = '--nginx' in sys.argv
+LINK_UI = '--link-ui' in sys.argv
+DEPLOY_LEGACY = '--legacy' in sys.argv
+
+LEGACY_PROJECT_DIR = os.path.join(os.path.dirname(PROJECT_DIR), 'new-api-main', 'web')
+LEGACY_DIST_DIR = os.path.join(LEGACY_PROJECT_DIR, 'dist')
+LEGACY_REMOTE_DIR = '/var/www/newapi-legacy-frontend'
 
 
 def build():
@@ -92,6 +100,12 @@ NGINX_CONF_CONTENT = r"""server {
         chunked_transfer_encoding on;
     }
 
+    # ── Legacy (old NewAPI) frontend at /legacy/ ──
+    location /legacy/ {
+        alias /var/www/newapi-legacy-frontend/;
+        try_files $uri $uri/ /legacy/index.html;
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
     }
@@ -133,7 +147,74 @@ def deploy():
     ssh.close()
 
 
+FOOTER_HTML = (
+    '<div id="skiapi-switch" style="position:fixed;bottom:20px;right:20px;z-index:9999">'
+    '<a href="/" '
+    'style="display:flex;align-items:center;gap:6px;padding:8px 16px;border-radius:20px;'
+    'background:linear-gradient(135deg,#6366F1,#8B5CF6);color:#fff;text-decoration:none;'
+    'font-size:13px;font-weight:600;box-shadow:0 4px 15px rgba(99,102,241,0.4);transition:all .3s">'
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">'
+    '<path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>'
+    'SKIAPI</a></div>'
+)
+
+
+def inject_link_ui(ssh):
+    """Set backend Footer option to show a 'Try New UI' floating button in legacy frontend."""
+    print('==> Injecting New UI link into legacy frontend...')
+    sql = "INSERT OR REPLACE INTO options (key, value) VALUES ('Footer', '{}');".format(
+        FOOTER_HTML.replace("'", "''")
+    )
+    sftp = ssh.open_sftp()
+    with sftp.open('/tmp/skiapi_footer.sql', 'w') as f:
+        f.write(sql)
+    sftp.close()
+    run(ssh, 'sqlite3 /opt/newapi/data/one-api.db < /tmp/skiapi_footer.sql && rm /tmp/skiapi_footer.sql', check=True)
+    # Restart backend to reload options from DB
+    run(ssh, 'docker restart newapi-app 2>&1 || true')
+    print('==> Legacy frontend now links to New UI.')
+
+
+def build_legacy():
+    """Build the legacy NewAPI frontend with /legacy/ base path."""
+    print('==> Building legacy frontend...')
+    env = os.environ.copy()
+    env['MSYS_NO_PATHCONV'] = '1'
+    env['VITE_BASE_PATH'] = '/legacy/'
+    result = subprocess.run(['bun', 'run', 'build'], cwd=LEGACY_PROJECT_DIR, shell=True, env=env)
+    if result.returncode != 0:
+        print('Legacy build failed!')
+        sys.exit(1)
+    print('==> Legacy build complete.')
+
+
+def deploy_legacy():
+    """Deploy legacy frontend to VPS at /legacy/ path."""
+    print('==> Deploying legacy frontend...')
+    ssh = get_ssh()
+    tmp = tempfile.mktemp(suffix='.tar.gz')
+    with tarfile.open(tmp, 'w:gz') as tar:
+        tar.add(LEGACY_DIST_DIR, arcname='.')
+    print(f'==> Uploading legacy ({os.path.getsize(tmp) // 1024} KB)...')
+    upload_file(ssh, tmp, '/root/newapi-legacy-frontend.tar.gz')
+    os.unlink(tmp)
+    run(ssh, f'mkdir -p {LEGACY_REMOTE_DIR} && rm -rf {LEGACY_REMOTE_DIR}/* && '
+        f'tar xzf /root/newapi-legacy-frontend.tar.gz -C {LEGACY_REMOTE_DIR}/ && '
+        f'chown -R www-data:www-data {LEGACY_REMOTE_DIR}/', check=True)
+    print(f'[OK] Legacy frontend deployed at /legacy/')
+    ssh.close()
+
+
 if __name__ == '__main__':
-    if not NO_BUILD:
-        build()
-    deploy()
+    if DEPLOY_LEGACY:
+        if not NO_BUILD:
+            build_legacy()
+        deploy_legacy()
+    else:
+        if not NO_BUILD:
+            build()
+        deploy()
+    if LINK_UI:
+        ssh = get_ssh()
+        inject_link_ui(ssh)
+        ssh.close()
