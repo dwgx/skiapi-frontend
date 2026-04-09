@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Build and deploy the frontend to the test VPS.
+Build and deploy the frontend to VPS.
 
 Usage:
-    python deploy.py              # build + deploy SKIAPI frontend
+    python deploy.py              # build + deploy SKIAPI frontend to test VPS
     python deploy.py --no-build   # skip build, deploy existing dist/
     python deploy.py --nginx      # also re-write nginx config
     python deploy.py --legacy     # build + deploy old NewAPI frontend at /legacy/
     python deploy.py --link-ui    # inject "SKIAPI" button into legacy frontend footer
+    python deploy.py --prod       # deploy to production (skiapi.dev)
+    python deploy.py --all        # deploy to both test VPS and production
 """
 import os
 import sys
@@ -21,6 +23,7 @@ PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 sys.path.insert(0, SCRIPT_DIR)
 
 from config import REMOTE_DIR, FRONTEND_PORT, BACKEND_PORT
+from config import PROD_HOST, PROD_PORT, PROD_USER, PROD_PASSWORD, PROD_REMOTE_DIR
 from vps import get_ssh, run, upload_file
 
 DIST_DIR = os.path.join(PROJECT_DIR, 'dist')
@@ -28,6 +31,8 @@ NO_BUILD = '--no-build' in sys.argv
 WRITE_NGINX = '--nginx' in sys.argv
 LINK_UI = '--link-ui' in sys.argv
 DEPLOY_LEGACY = '--legacy' in sys.argv
+DEPLOY_PROD = '--prod' in sys.argv or '--all' in sys.argv
+DEPLOY_TEST = '--prod' not in sys.argv or '--all' in sys.argv
 
 LEGACY_PROJECT_DIR = os.path.join(os.path.dirname(PROJECT_DIR), 'new-api-main', 'web')
 LEGACY_DIST_DIR = os.path.join(LEGACY_PROJECT_DIR, 'dist')
@@ -175,6 +180,42 @@ def inject_link_ui(ssh):
     print('==> Legacy frontend now links to New UI.')
 
 
+def deploy_prod():
+    """Deploy to production (skiapi.dev) via 1Panel OpenResty."""
+    print('==> [PROD] Connecting to skiapi.dev...')
+    import paramiko
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.connect(PROD_HOST, port=PROD_PORT, username=PROD_USER, password=PROD_PASSWORD)
+
+    print('==> [PROD] Creating tarball...')
+    tarball = make_tarball()
+
+    print(f'==> [PROD] Uploading ({os.path.getsize(tarball) // 1024} KB)...')
+    sftp = ssh.open_sftp()
+    sftp.put(tarball, '/root/skiapi-frontend.tar.gz')
+    sftp.close()
+    os.unlink(tarball)
+
+    print('==> [PROD] Extracting...')
+    stdin, stdout, stderr = ssh.exec_command(
+        f'rm -rf {PROD_REMOTE_DIR}/* && tar xzf /root/skiapi-frontend.tar.gz -C {PROD_REMOTE_DIR}/'
+    )
+    stdout.read()
+
+    print('==> [PROD] Verifying...')
+    stdin, stdout, stderr = ssh.exec_command(
+        'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ -H "Host: skiapi.dev"'
+    )
+    code = stdout.read().decode().strip()
+    if code == '200':
+        print('[OK] Production deployed: https://skiapi.dev')
+    else:
+        print(f'[WARN] HTTP check returned: {code}')
+
+    ssh.close()
+
+
 def build_legacy():
     """Build the legacy NewAPI frontend with /legacy/ base path."""
     print('==> Building legacy frontend...')
@@ -213,7 +254,10 @@ if __name__ == '__main__':
     else:
         if not NO_BUILD:
             build()
-        deploy()
+        if DEPLOY_TEST:
+            deploy()
+        if DEPLOY_PROD:
+            deploy_prod()
     if LINK_UI:
         ssh = get_ssh()
         inject_link_ui(ssh)

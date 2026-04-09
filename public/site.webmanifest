@@ -1,0 +1,16 @@
+{
+  "name": "SKIAPI Console",
+  "short_name": "SKIAPI",
+  "description": "AI API Gateway - 50+ models, one endpoint",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0F0F0F",
+  "theme_color": "#7C3AED",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

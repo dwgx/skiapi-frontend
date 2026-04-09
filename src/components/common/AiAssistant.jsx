@@ -190,6 +190,51 @@ export default function AiAssistant() {
   const messagesEnd = useRef(null);
   const inputRef = useRef(null);
 
+  // ── Draggable FAB state ──
+  const [fabPos, setFabPos] = useState(() => {
+    try { const s = localStorage.getItem('cirno_fab_pos'); return s ? JSON.parse(s) : { right: 24, bottom: 24 }; }
+    catch { return { right: 24, bottom: 24 }; }
+  });
+  const dragRef = useRef({ dragging: false, startX: 0, startY: 0, startRight: 0, startBottom: 0, moved: false });
+
+  const handleDragStart = useCallback((e) => {
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    dragRef.current = { dragging: true, startX: clientX, startY: clientY, startRight: fabPos.right, startBottom: fabPos.bottom, moved: false };
+    e.preventDefault();
+  }, [fabPos]);
+
+  useEffect(() => {
+    const onMove = (e) => {
+      const d = dragRef.current;
+      if (!d.dragging) return;
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const dx = d.startX - clientX;
+      const dy = d.startY - clientY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) d.moved = true;
+      const newRight = Math.max(8, Math.min(window.innerWidth - 58, d.startRight + dx));
+      const newBottom = Math.max(8, Math.min(window.innerHeight - 58, d.startBottom + dy));
+      setFabPos({ right: newRight, bottom: newBottom });
+    };
+    const onEnd = () => {
+      if (dragRef.current.dragging) {
+        dragRef.current.dragging = false;
+        setFabPos(pos => { localStorage.setItem('cirno_fab_pos', JSON.stringify(pos)); return pos; });
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onEnd);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onEnd);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onEnd);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onEnd);
+    };
+  }, []);
+
   // Load config
   useEffect(() => {
     const user = localStorage.getItem('user');
@@ -215,7 +260,7 @@ export default function AiAssistant() {
   useEffect(() => { messagesEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   useEffect(() => { if (open) setTimeout(() => inputRef.current?.focus(), 250); }, [open]);
 
-  const handleOpen = () => { setOpen(true); setClosing(false); };
+  const handleOpen = () => { if (dragRef.current.moved) return; setOpen(true); setClosing(false); };
   const handleClose = () => {
     setClosing(true);
     setFullscreen(false);
@@ -327,13 +372,26 @@ ${extra}`;
           continue;
         }
 
-        const finalContent = choice.message?.content || '';
+        const finalContent = (choice.message?.content || '').trim();
         setMessages(p => {
           const m = [...p].filter(x => !x._tooling);
-          m.push({ role: 'assistant', content: finalContent });
+          if (finalContent) {
+            m.push({ role: 'assistant', content: finalContent });
+          } else {
+            // LLM returned empty — show fallback instead of empty bubble
+            m.push({ role: 'assistant', content: 'あたいは最強だけど…ちょっと答えが出てこないよ！もう一回聞いてね～ ⑨' });
+          }
           return m;
         });
         break;
+      }
+      // maxRounds exhausted — clean up tooling placeholder
+      if (maxRounds <= 0) {
+        setMessages(p => {
+          const m = [...p].filter(x => !x._tooling);
+          m.push({ role: 'assistant', content: '呜…想得太久了！请再问一次吧～ ⑨' });
+          return m;
+        });
       }
       playSound('receive');
     } catch (e) {
@@ -356,8 +414,8 @@ ${extra}`;
   // ── FAB button ──
   if (!open) {
     return (
-      <Box onClick={handleOpen} sx={{
-        position: 'fixed', right: 24, bottom: 24, zIndex: 1300, cursor: 'pointer',
+      <Box onClick={handleOpen} onMouseDown={handleDragStart} onTouchStart={handleDragStart} sx={{
+        position: 'fixed', right: fabPos.right, bottom: fabPos.bottom, zIndex: 1300, cursor: 'grab',
         width: 50, height: 50, borderRadius: '50%',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         overflow: 'hidden',

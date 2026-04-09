@@ -68,14 +68,14 @@ function SettingsPanel({ config, setConfig, models, groups, apiKey, setApiKey, o
       <FormControl fullWidth size="small">
         <InputLabel>{t('模型')}</InputLabel>
         <Select value={config.model} onChange={e => setConfig(c => ({ ...c, model: e.target.value }))} label={t('模型')}>
-          {models.map(m => <MenuItem key={m} value={m}><Typography variant="body2" noWrap>{m}</Typography></MenuItem>)}
+          {(Array.isArray(models) ? models : []).map(m => <MenuItem key={m} value={m}><Typography variant="body2" noWrap>{m}</Typography></MenuItem>)}
         </Select>
       </FormControl>
 
       <FormControl fullWidth size="small">
         <InputLabel>{t('分组')}</InputLabel>
         <Select value={config.group} onChange={e => setConfig(c => ({ ...c, group: e.target.value }))} label={t('分组')}>
-          {groups.map(g => <MenuItem key={g.value} value={g.value}>{g.label}</MenuItem>)}
+          {(Array.isArray(groups) ? groups : []).map(g => <MenuItem key={g.value} value={g.value}>{g.label}</MenuItem>)}
         </Select>
       </FormControl>
 
@@ -158,7 +158,7 @@ function SettingsPanel({ config, setConfig, models, groups, apiKey, setApiKey, o
       </Box>
 
       <Divider />
-      <Stack direction="row" spacing={1}>
+      <Stack spacing={1}>
         <Button size="small" startIcon={<Download />} onClick={() => {
           const blob = new Blob([JSON.stringify({ config, messages: [] }, null, 2)], { type: 'application/json' });
           const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'playground-config.json'; a.click();
@@ -390,9 +390,8 @@ export default function Playground() {
   useEffect(() => { localStorage.setItem('playground_messages', JSON.stringify(messages)); }, [messages]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
-  // Paste image from clipboard
+  // Paste image from clipboard (always enabled — auto-activates image mode)
   const handlePaste = useCallback((e) => {
-    if (!config.imageEnabled) return;
     const items = e.clipboardData?.items;
     if (!items) return;
     for (const item of items) {
@@ -400,7 +399,10 @@ export default function Playground() {
         e.preventDefault();
         const blob = item.getAsFile();
         const reader = new FileReader();
-        reader.onload = () => setImageUrls(prev => [...prev, reader.result]);
+        reader.onload = () => {
+          setImageUrls(prev => [...prev, reader.result]);
+          if (!config.imageEnabled) setConfig(c => ({ ...c, imageEnabled: true }));
+        };
         reader.readAsDataURL(blob);
         return;
       }
@@ -566,7 +568,7 @@ export default function Playground() {
                 <Typography variant="caption">{t('Enter 发送 / Shift+Enter 换行 / 粘贴图片')}</Typography>
               </Box>
             )}
-            {messages.map((msg, i) => (
+            {(Array.isArray(messages) ? messages : []).map((msg, i) => (
               <MessageBubble key={i} msg={msg} index={i} onCopy={handleCopy} onDelete={handleDelete} onEdit={handleEdit}
                 loading={loading} isLast={i === messages.length - 1} />
             ))}

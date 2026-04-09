@@ -95,9 +95,20 @@ export function showSuccess(msg) {
 }
 
 export function showError(msg) {
-  if (typeof msg === 'object') {
-    msg = msg?.response?.data?.message || msg?.message || 'Unknown error';
+  if (msg == null) {
+    msg = 'Unknown error';
+  } else if (typeof msg === 'object') {
+    // Axios error → API error message → Error.message → JSON dump → fallback
+    msg = msg?.response?.data?.message
+      || msg?.message
+      || (typeof msg.toString === 'function' && msg.toString() !== '[object Object]' ? msg.toString() : null)
+      || (() => { try { return JSON.stringify(msg); } catch { return null; } })()
+      || 'Unknown error';
+  } else if (typeof msg !== 'string') {
+    msg = String(msg);
   }
+  // Guard against empty strings
+  if (!msg || !msg.trim()) msg = 'Unknown error';
   window.__SNACKBAR__?.('error', msg);
 }
 
