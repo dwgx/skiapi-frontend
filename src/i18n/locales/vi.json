@@ -4,7 +4,7 @@
         "home_features_sub": "Ít mã keo hơn. Giao hàng nhiều hơn.",
         "home_hero_1": "Bạn xây dựng.",
         "home_hero_2": "Chúng tôi kết nối.",
-        "home_subtitle": "GPT-4o · Claude · Gemini · DeepSeek — 50+ mô hình, không cần tích hợp",
+        "home_subtitle": "まことにありがとうございます",
         " + 图片生成调用 {{symbol}}{{price}} / 1次 * {{ratioType}} {{ratio}}": " + Gọi tạo hình ảnh {{symbol}}{{price}} / 1 lần * {{ratioType}} {{ratio}}",
         " + 文件搜索 {{count}}次 / 1K 次 * {{symbol}}{{price}} * {{ratioType}} {{ratio}}_one": " + Tìm kiếm tệp {{count}} lần / 1K lần * {{symbol}}{{price}} * {{ratioType}} {{ratio}}",
         " + 文件搜索 {{count}}次 / 1K 次 * {{symbol}}{{price}} * {{ratioType}} {{ratio}}_other": " + Tìm kiếm tệp {{count}} lần / 1K lần * {{symbol}}{{price}} * {{ratioType}} {{ratio}}",

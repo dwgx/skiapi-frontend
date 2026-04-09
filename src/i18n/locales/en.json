@@ -4,7 +4,7 @@
         "home_features_sub": "Less glue code. More shipping.",
         "home_hero_1": "You build.",
         "home_hero_2": "We connect.",
-        "home_subtitle": "GPT-4o · Claude · Gemini · DeepSeek — 50+ models, zero integration",
+        "home_subtitle": "まことにありがとうございます",
         " + 图片生成调用 {{symbol}}{{price}} / 1次 * {{ratioType}} {{ratio}}": " + Image generation call {{symbol}}{{price}} / 1 time * {{ratioType}} {{ratio}}",
         " + 文件搜索 {{count}}次 / 1K 次 * {{symbol}}{{price}} * {{ratioType}} {{ratio}}_one": " + File search {{count}} time / 1K times * {{symbol}}{{price}} * {{ratioType}} {{ratio}}",
         " + 文件搜索 {{count}}次 / 1K 次 * {{symbol}}{{price}} * {{ratioType}} {{ratio}}_other": " + File search {{count}} times / 1K times * {{symbol}}{{price}} * {{ratioType}} {{ratio}}",

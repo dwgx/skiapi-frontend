@@ -4,7 +4,7 @@
         "home_features_sub": "Moins de code plomberie. Plus de livraisons.",
         "home_hero_1": "Vous créez.",
         "home_hero_2": "On connecte.",
-        "home_subtitle": "GPT-4o · Claude · Gemini · DeepSeek — 50+ modèles, zéro intégration",
+        "home_subtitle": "まことにありがとうございます",
         " + 图片生成调用 {{symbol}}{{price}} / 1次 * {{ratioType}} {{ratio}}": " + Appel de génération d'image {{symbol}}{{price}} / 1 fois * {{ratioType}} {{ratio}}",
         " + 文件搜索 {{count}}次 / 1K 次 * {{symbol}}{{price}} * {{ratioType}} {{ratio}}_many": " + Recherche de fichiers {{count}} fois / 1K fois * {{symbol}}{{price}} * {{ratioType}} {{ratio}}",
         " + 文件搜索 {{count}}次 / 1K 次 * {{symbol}}{{price}} * {{ratioType}} {{ratio}}_one": " + Recherche de fichiers {{count}} fois / 1K fois * {{symbol}}{{price}} * {{ratioType}} {{ratio}}",
