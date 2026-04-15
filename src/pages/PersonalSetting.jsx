@@ -8,7 +8,7 @@ import {
   ManageAccounts, Person, Lock, Link as LinkIcon, Warning,
   ContentCopy, CheckCircle, Edit, Save, EventAvailable,
   AccountBalanceWallet, DataUsage, Group, Email, GitHub,
-  Shield, Notifications, Webhook,
+  Shield, Notifications, Webhook, Subscriptions, Refresh,
 } from '@mui/icons-material';
 import { API } from '../api';
 import { useAuth } from '../contexts/AuthContext';
@@ -99,6 +99,30 @@ export default function PersonalSetting() {
     notification_email: '', webhook_url: '', webhook_secret: '',
     bark_url: '', gotify_url: '', gotify_token: '', gotify_priority: 5,
   });
+
+  // Subscription self-check state
+  const [subData, setSubData] = useState(null);
+  const [subPlans, setSubPlans] = useState([]);
+  const [subLoading, setSubLoading] = useState(false);
+
+  const fetchSubscriptionSelf = async () => {
+    setSubLoading(true);
+    try {
+      const [selfRes, plansRes] = await Promise.all([
+        API.get('/api/subscription/self'),
+        API.get('/api/subscription/plans').catch(() => ({ data: { success: false } })),
+      ]);
+      if (selfRes.data?.success) setSubData(selfRes.data.data);
+      if (plansRes.data?.success) {
+        const raw = Array.isArray(plansRes.data.data) ? plansRes.data.data : [];
+        setSubPlans(raw.map(item => item?.plan || item));
+      }
+      // Refresh user quota via /api/user/self so balance is up-to-date
+      const uRes = await API.get('/api/user/self').catch(() => null);
+      if (uRes?.data?.success) updateUser(uRes.data.data);
+    } catch (err) { showError(err); }
+    setSubLoading(false);
+  };
 
   useEffect(() => {
     if (!user) return;
@@ -292,6 +316,8 @@ export default function PersonalSetting() {
               <Tab icon={<LinkIcon sx={{ fontSize: 18 }} />} iconPosition="start" label={t('账户绑定')} />
               <Tab icon={<Lock sx={{ fontSize: 18 }} />} iconPosition="start" label={t('安全设置')} />
               <Tab icon={<Notifications sx={{ fontSize: 18 }} />} iconPosition="start" label={t('通知设置')} />
+              <Tab icon={<Subscriptions sx={{ fontSize: 18 }} />} iconPosition="start" label={t('订阅自检')}
+                onClick={() => { if (!subData) fetchSubscriptionSelf(); }} />
               <Tab icon={<Warning sx={{ fontSize: 18 }} />} iconPosition="start" label={t('危险区域')} />
             </Tabs>
           </Card>
@@ -429,8 +455,164 @@ export default function PersonalSetting() {
             </SectionCard>
           )}
 
-          {/* Tab 3: Danger Zone */}
+          {/* Tab 3: Subscription Self-Check */}
           {tab === 3 && (
+            <SectionCard icon={Subscriptions} title={t('订阅自检')} color={theme.palette.primary.main}>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
+                <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                  {t('查看当前账户的订阅计划、剩余额度与到期时间')}
+                </Typography>
+                <Button size="small" variant="outlined" startIcon={<Refresh />} onClick={fetchSubscriptionSelf} disabled={subLoading}>
+                  {subLoading ? <CircularProgress size={16} /> : t('刷新')}
+                </Button>
+              </Stack>
+
+              {/* Account overview */}
+              <Grid container spacing={2} sx={{ mb: 2 }}>
+                <Grid size={{ xs: 12, sm: 4 }}>
+                  <Card variant="outlined" sx={{ p: 2 }}>
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <AccountBalanceWallet sx={{ color: 'primary.main' }} />
+                      <Box>
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>{t('钱包余额')}</Typography>
+                        <Typography variant="h6" sx={{ fontWeight: 700 }}>{renderQuota(user?.quota || 0)}</Typography>
+                      </Box>
+                    </Stack>
+                  </Card>
+                </Grid>
+                <Grid size={{ xs: 12, sm: 4 }}>
+                  <Card variant="outlined" sx={{ p: 2 }}>
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <DataUsage sx={{ color: 'warning.main' }} />
+                      <Box>
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>{t('累计已用')}</Typography>
+                        <Typography variant="h6" sx={{ fontWeight: 700 }}>{renderQuota(user?.used_quota || 0)}</Typography>
+                      </Box>
+                    </Stack>
+                  </Card>
+                </Grid>
+                <Grid size={{ xs: 12, sm: 4 }}>
+                  <Card variant="outlined" sx={{ p: 2 }}>
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <Group sx={{ color: 'success.main' }} />
+                      <Box>
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }}>{t('当前分组')}</Typography>
+                        <Typography variant="h6" sx={{ fontWeight: 700 }}>{user?.group || 'default'}</Typography>
+                      </Box>
+                    </Stack>
+                  </Card>
+                </Grid>
+              </Grid>
+
+              {/* Billing preference */}
+              {subData && (
+                <Alert severity="info" sx={{ mb: 2 }}>
+                  {t('计费偏好')}: <strong>{
+                    subData.billing_preference === 'subscription_first' ? t('优先使用订阅额度') :
+                    subData.billing_preference === 'topup_first' ? t('优先使用钱包余额') :
+                    subData.billing_preference || 'default'
+                  }</strong>
+                </Alert>
+              )}
+
+              {/* Active subscriptions */}
+              <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1.5 }}>{t('当前有效的订阅')}</Typography>
+              {subLoading && !subData ? (
+                <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}><CircularProgress size={24} /></Box>
+              ) : !subData || !subData.subscriptions || subData.subscriptions.length === 0 ? (
+                <Alert severity="warning" sx={{ mb: 2 }}>
+                  {t('当前没有有效订阅。')} {t('您可能正在使用按量付费模式（钱包余额）。')}
+                </Alert>
+              ) : (
+                <Stack spacing={1.5} sx={{ mb: 3 }}>
+                  {subData.subscriptions.map((s, i) => {
+                    const sub = s.subscription || s;
+                    const plan = subPlans.find(p => (p.plan?.id ?? p.id) === sub.plan_id);
+                    const planData = plan?.plan || plan;
+                    const total = Number(sub.amount_total || 0);
+                    const used = Number(sub.amount_used || 0);
+                    const remaining = Math.max(0, total - used);
+                    const pct = total > 0 ? (used / total) * 100 : 0;
+                    const endDate = sub.end_time ? new Date(sub.end_time * 1000) : null;
+                    const nextReset = sub.next_reset_time ? new Date(sub.next_reset_time * 1000) : null;
+                    const isExpired = endDate && endDate.getTime() < Date.now();
+                    return (
+                      <Card key={sub.id || i} variant="outlined" sx={{ p: 2 }}>
+                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} justifyContent="space-between">
+                          <Box sx={{ flex: 1 }}>
+                            <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+                              <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                                {planData?.title || `${t('订阅计划')} #${sub.plan_id}`}
+                              </Typography>
+                              <Chip label={isExpired ? t('已过期') : (sub.status || 'active')}
+                                size="small" color={isExpired ? 'default' : 'success'} />
+                              {sub.source === 'admin' && <Chip label={t('管理员赠送')} size="small" variant="outlined" />}
+                            </Stack>
+                            {planData?.subtitle && (
+                              <Typography variant="caption" sx={{ color: 'text.secondary' }}>{planData.subtitle}</Typography>
+                            )}
+                            <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
+                              <Typography variant="caption">
+                                {t('剩余')}: <strong>{renderQuota(remaining)}</strong> / {renderQuota(total)}
+                              </Typography>
+                              {endDate && (
+                                <Typography variant="caption">
+                                  {t('到期')}: <strong>{endDate.toLocaleString()}</strong>
+                                </Typography>
+                              )}
+                              {nextReset && nextReset.getTime() > Date.now() && (
+                                <Typography variant="caption">
+                                  {t('下次重置')}: <strong>{nextReset.toLocaleString()}</strong>
+                                </Typography>
+                              )}
+                            </Stack>
+                            <Box sx={{ mt: 1, height: 6, borderRadius: 1, bgcolor: alpha(theme.palette.primary.main, 0.1), overflow: 'hidden' }}>
+                              <Box sx={{ height: '100%', width: `${Math.min(100, pct)}%`,
+                                bgcolor: pct > 85 ? 'warning.main' : 'primary.main', transition: 'width 0.3s' }} />
+                            </Box>
+                          </Box>
+                        </Stack>
+                      </Card>
+                    );
+                  })}
+                </Stack>
+              )}
+
+              {/* History */}
+              {subData && subData.all_subscriptions && subData.all_subscriptions.length > (subData.subscriptions?.length || 0) && (
+                <>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1.5, mt: 2 }}>{t('历史订阅')}</Typography>
+                  <Stack spacing={1}>
+                    {subData.all_subscriptions
+                      .filter(s => {
+                        const sub = s.subscription || s;
+                        return !(subData.subscriptions || []).some(a => (a.subscription || a).id === sub.id);
+                      })
+                      .map((s, i) => {
+                        const sub = s.subscription || s;
+                        const plan = subPlans.find(p => (p.plan?.id ?? p.id) === sub.plan_id);
+                        const planData = plan?.plan || plan;
+                        return (
+                          <Stack key={sub.id || i} direction="row" justifyContent="space-between" alignItems="center"
+                            sx={{ py: 1, px: 1.5, borderRadius: 1, border: 1, borderColor: 'divider' }}>
+                            <Typography variant="body2">{planData?.title || `#${sub.plan_id}`}</Typography>
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <Chip label={sub.status} size="small" variant="outlined" />
+                              {sub.end_time && <Typography variant="caption" color="text.secondary">
+                                {new Date(sub.end_time * 1000).toLocaleDateString()}
+                              </Typography>}
+                            </Stack>
+                          </Stack>
+                        );
+                      })}
+                  </Stack>
+                </>
+              )}
+            </SectionCard>
+          )}
+
+          {/* Tab 4: Danger Zone */}
+          {tab === 4 && (
             <SectionCard icon={Warning} title={t('危险区域')} color={theme.palette.error.main}>
               <Alert severity="error" sx={{ mb: 2 }}>{t('以下操作不可逆，请谨慎操作。')}</Alert>
               <Stack direction="row" justifyContent="space-between" alignItems="center"

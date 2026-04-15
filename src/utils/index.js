@@ -45,7 +45,31 @@ function getStatusCache() {
 }
 
 export function getQuotaDisplayType() {
-  return localStorage.getItem('quota_display_type') || 'USD';
+  return localStorage.getItem('quota_display_type') || 'TOKENS';
+}
+
+/**
+ * Returns the active currency display info for converting raw USD-base prices.
+ * Used by pricing pages that already compute USD-base values (model pricing, plans).
+ * For TOKENS mode returns {symbol: '', rate: 1, isTokens: true} so caller can decide.
+ */
+export function getCurrencyInfo() {
+  const displayType = getQuotaDisplayType();
+  if (displayType === 'TOKENS') return { symbol: '', rate: 1, isTokens: true, type: 'TOKENS' };
+  if (displayType === 'CNY') {
+    const s = getStatusCache();
+    return { symbol: '¥', rate: Number(s.usd_exchange_rate) || 1, isTokens: false, type: 'CNY' };
+  }
+  if (displayType === 'CUSTOM') {
+    const s = getStatusCache();
+    return {
+      symbol: s.custom_currency_symbol || '¤',
+      rate: Number(s.custom_currency_exchange_rate) || 1,
+      isTokens: false,
+      type: 'CUSTOM',
+    };
+  }
+  return { symbol: '$', rate: 1, isTokens: false, type: 'USD' };
 }
 
 /**

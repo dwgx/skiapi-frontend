@@ -2,7 +2,7 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   Box, Card, Table, TableBody, TableCell, TableContainer, TableHead,
   TableRow, TablePagination, Chip, IconButton, Stack, Button, Tooltip,
-  Checkbox, Switch, Tabs, Tab, alpha, useTheme,
+  Checkbox, Switch, Tabs, Tab, TableSortLabel, alpha, useTheme,
 } from '@mui/material';
 import {
   Add, Edit, Delete, PlayArrow, Layers,
@@ -23,10 +23,29 @@ import ChannelTestDialog from '../components/channel/ChannelTestDialog';
 export default function Channel() {
   const { t } = useTranslation();
   const theme = useTheme();
+  const [idSortDir, setIdSortDir] = useState('desc'); // 'asc' | 'desc' | null (backend default)
+  const extraParams = useMemo(
+    () => (idSortDir ? { id_sort: 'true' } : undefined),
+    [idSortDir]
+  );
   const {
     items: channels, loading, page, setPage, rowsPerPage, changeRowsPerPage,
     total, search, setSearch, refresh,
-  } = usePaginatedList('/api/channel/', { searchEndpoint: '/api/channel/search', pageSize: 100 });
+  } = usePaginatedList('/api/channel/', { searchEndpoint: '/api/channel/search', pageSize: 100, extraParams });
+
+  const sortedChannelsByDir = useMemo(() => {
+    if (!idSortDir) return channels;
+    const arr = [...channels].sort((a, b) => a.id - b.id);
+    return idSortDir === 'desc' ? arr.reverse() : arr;
+  }, [channels, idSortDir]);
+
+  const handleIdSort = () => {
+    setIdSortDir(prev => {
+      if (prev === null) return 'asc';
+      if (prev === 'asc') return 'desc';
+      return null;
+    });
+  };
 
   const [typeFilter, setTypeFilter] = useState(0); // 0 = all
   const [allTypeCounts, setAllTypeCounts] = useState(null);
@@ -69,9 +88,9 @@ export default function Channel() {
   }, [channels, allTypeCounts]);
 
   const filteredChannels = useMemo(() => {
-    if (typeFilter === 0) return channels;
-    return channels.filter(ch => ch.type === typeFilter);
-  }, [channels, typeFilter]);
+    if (typeFilter === 0) return sortedChannelsByDir;
+    return sortedChannelsByDir.filter(ch => ch.type === typeFilter);
+  }, [sortedChannelsByDir, typeFilter]);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editChannel, setEditChannel] = useState(null);
@@ -197,7 +216,20 @@ export default function Channel() {
                     indeterminate={selected.length > 0 && selected.length < filteredChannels.length}
                     onChange={toggleSelectAll} />
                 </TableCell>
-                <TableCell>ID</TableCell>
+                <TableCell sortDirection={idSortDir || false}>
+                  <TableSortLabel
+                    active
+                    direction={idSortDir || 'asc'}
+                    onClick={handleIdSort}
+                    sx={{
+                      '& .MuiTableSortLabel-icon': {
+                        opacity: idSortDir ? 1 : 0.35,
+                      },
+                    }}
+                  >
+                    ID
+                  </TableSortLabel>
+                </TableCell>
                 <TableCell>{t('名称')}</TableCell>
                 <TableCell>{t('类型')}</TableCell>
                 <TableCell>{t('状态')}</TableCell>

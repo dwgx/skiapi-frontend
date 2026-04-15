@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Box, Card, Table, TableBody, TableCell, TableContainer, TableHead,
   TableRow, TablePagination, Chip, IconButton, Stack, Button, Tooltip,
   CircularProgress, DialogTitle, DialogContent, DialogActions, TextField,
-  Switch, FormControlLabel,
+  Switch, FormControlLabel, MenuItem, Typography,
 } from '@mui/material';
 import { Add, Edit, Delete, VpnKey, ContentCopy } from '@mui/icons-material';
 import { useTranslation } from 'react-i18next';
@@ -30,6 +30,23 @@ export default function Token() {
   const [saving, setSaving] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const [groups, setGroups] = useState([]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await API.get('/api/user/self/groups');
+        if (res.data.success && res.data.data) {
+          const opts = Object.entries(res.data.data).map(([value, info]) => ({
+            value,
+            label: info?.desc || value,
+            ratio: info?.ratio,
+          }));
+          setGroups(opts);
+        }
+      } catch {}
+    })();
+  }, []);
 
   const handleDelete = async () => {
     try {
@@ -42,7 +59,20 @@ export default function Token() {
 
   const handleCopyKey = async (token) => {
     try {
-      const key = token.key || '';
+      // v0.12.6+ masks token.key in list responses — fetch full key via POST /api/token/:id/key
+      let key = '';
+      try {
+        const res = await API.post(`/api/token/${token.id}/key`);
+        if (res.data?.success && res.data?.data?.key) {
+          key = res.data.data.key;
+        }
+      } catch {}
+      // Fallback: if the list field still has an unmasked key (older backend), use it
+      if (!key && token.key && !token.key.includes('*')) key = token.key;
+      if (!key) {
+        showError(t('无法获取完整密钥'));
+        return;
+      }
       await copy(key.startsWith('sk-') ? key : `sk-${key}`);
       showSuccess(t('密钥已复制'));
     } catch (err) { showError(err); }
@@ -69,9 +99,16 @@ export default function Token() {
       const res = editToken ? await API.put('/api/token/', form) : await API.post('/api/token/', form);
       if (res.data.success) {
         showSuccess(editToken ? t('更新成功') : t('创建成功'));
-        if (!editToken && res.data.data) {
-          await copy(`sk-${res.data.data}`);
-          showSuccess(t('新令牌密钥已复制到剪贴板'));
+        // v0.12.6+ no longer returns the raw key from POST /api/token/.
+        // Legacy (older backends) returned it as res.data.data — keep that path as a fallback.
+        if (!editToken) {
+          const legacyKey = typeof res.data.data === 'string' ? res.data.data : '';
+          if (legacyKey) {
+            await copy(`sk-${legacyKey}`);
+            showSuccess(t('新令牌密钥已复制到剪贴板'));
+          } else {
+            showSuccess(t('请在列表中点击复制按钮获取密钥'));
+          }
         }
         setDialogOpen(false); refresh();
       } else showError(res.data.message);
@@ -146,7 +183,28 @@ export default function Token() {
             <FormControlLabel control={<Switch checked={form.unlimited_quota} onChange={e => setForm(f => ({ ...f, unlimited_quota: e.target.checked }))} />} label={t('无限额度')} />
             <TextField fullWidth label={t('模型限制')} value={form.models || ''} onChange={set('models')} placeholder={t('留空不限制，逗号分隔')} />
             <TextField fullWidth label={t('IP 限制 (子网)')} value={form.subnet || ''} onChange={set('subnet')} placeholder={t('留空不限制')} />
-            <TextField fullWidth label={t('分组')} value={form.group || ''} onChange={set('group')} placeholder={t('留空使用默认分组')} />
+            <TextField
+              select
+              fullWidth
+              label={t('分组')}
+              value={form.group || ''}
+              onChange={set('group')}
+              helperText={t('留空使用默认分组')}
+            >
+              <MenuItem value="">
+                <em>{t('默认分组')}</em>
+              </MenuItem>
+              {groups.map(g => (
+                <MenuItem key={g.value} value={g.value}>
+                  <Stack direction="row" spacing={1} alignItems="center" sx={{ width: '100%' }}>
+                    <Typography sx={{ flex: 1 }}>{g.label}</Typography>
+                    {g.ratio != null && (
+                      <Chip label={`x${g.ratio}`} size="small" variant="outlined" sx={{ height: 18, fontSize: '0.7rem' }} />
+                    )}
+                  </Stack>
+                </MenuItem>
+              ))}
+            </TextField>
           </Stack>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>

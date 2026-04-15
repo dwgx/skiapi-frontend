@@ -4,7 +4,7 @@ import {
   Select, MenuItem, FormControl, InputLabel, IconButton, Chip,
   Switch, FormControlLabel, Slider, CircularProgress, Tooltip,
   Divider, Avatar, Paper, Tabs, Tab, Collapse, alpha, useTheme,
-  Dialog,
+  Dialog, Autocomplete,
 } from '@mui/material';
 import {
   Send, Delete, ContentCopy, Person, SmartToy, Code, StopCircle,
@@ -65,12 +65,38 @@ function SettingsPanel({ config, setConfig, models, groups, apiKey, setApiKey, o
 
   return (
     <Stack spacing={2} sx={{ p: 2 }}>
-      <FormControl fullWidth size="small">
-        <InputLabel>{t('模型')}</InputLabel>
-        <Select value={config.model} onChange={e => setConfig(c => ({ ...c, model: e.target.value }))} label={t('模型')}>
-          {(Array.isArray(models) ? models : []).map(m => <MenuItem key={m} value={m}><Typography variant="body2" noWrap>{m}</Typography></MenuItem>)}
-        </Select>
-      </FormControl>
+      <Autocomplete
+        size="small"
+        fullWidth
+        options={Array.isArray(models) ? models : []}
+        value={config.model || null}
+        onChange={(_, v) => v && setConfig(c => ({ ...c, model: v }))}
+        autoHighlight
+        openOnFocus
+        selectOnFocus
+        disableClearable
+        filterOptions={(opts, state) => {
+          const q = state.inputValue.trim().toLowerCase();
+          if (!q) return opts;
+          // fuzzy: every char of query appears in order
+          return opts.filter(o => {
+            const s = String(o).toLowerCase();
+            if (s.includes(q)) return true;
+            let i = 0;
+            for (const ch of s) { if (ch === q[i]) i++; if (i >= q.length) return true; }
+            return false;
+          });
+        }}
+        renderOption={(props, option) => (
+          <li {...props} key={option}>
+            <Typography variant="body2" noWrap sx={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>{option}</Typography>
+          </li>
+        )}
+        renderInput={(params) => (
+          <TextField {...params} label={t('模型')} placeholder={t('输入以搜索...')} />
+        )}
+        ListboxProps={{ sx: { maxHeight: 360, '& li': { py: 0.5 } } }}
+      />
 
       <FormControl fullWidth size="small">
         <InputLabel>{t('分组')}</InputLabel>

@@ -21,8 +21,10 @@ export function StatusProvider({ children }) {
         if (s.enable_data_export !== undefined) localStorage.setItem('enable_data_export', String(s.enable_data_export));
         if (s.quota_per_unit) localStorage.setItem('quota_per_unit', String(s.quota_per_unit));
         // Prefer explicit quota_display_type (USD/CNY/CUSTOM/TOKENS); fall back to legacy display_in_currency boolean.
+        // Default to TOKENS (matches NewAPI upstream default) when backend sends neither.
         if (s.quota_display_type) localStorage.setItem('quota_display_type', s.quota_display_type);
         else if (s.display_in_currency !== undefined) localStorage.setItem('quota_display_type', s.display_in_currency ? 'USD' : 'TOKENS');
+        else localStorage.setItem('quota_display_type', 'TOKENS');
         localStorage.setItem('status', JSON.stringify(s));
 
         // Setup check: redirect to /setup if not initialized

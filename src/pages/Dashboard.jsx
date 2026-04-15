@@ -4,7 +4,7 @@ import {
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   alpha, useTheme, ToggleButton, ToggleButtonGroup, IconButton, Tooltip,
   Button, Divider, LinearProgress, Menu, MenuItem, ListItemIcon, ListItemText,
-  TextField, Popover,
+  TextField, Popover, Fade,
 } from '@mui/material';
 import {
   TrendingUp, AccountBalanceWallet, Speed, Dashboard as DashIcon,
@@ -104,6 +104,9 @@ export default function Dashboard() {
   const [chartLoading, setChartLoading] = useState(true);
   const [range, setRange] = useState('7');
   const [chartTab, setChartTab] = useState(0);
+  // Ranking metric for "调用次数排行" chart — count | quota | token_used
+  // skiapi.dev bills by tokens, so users want to rank by tokens, not request count
+  const [rankMetric, setRankMetric] = useState('quota');
   const { user, isAdmin } = useAuth();
   const [customAnchor, setCustomAnchor] = useState(null);
   const [customStart, setCustomStart] = useState('');
@@ -205,28 +208,187 @@ export default function Dashboard() {
     return { labels: e.map(x => x[0]), quota: e.map(x => x[1].q), count: e.map(x => x[1].c) };
   }, [chartData]);
 
+  // Bar data for "调用次数分布" — always raw call count
   const barData = useMemo(() => {
     const m = {};
     chartData.forEach(d => { const k = d.model_name || '?'; m[k] = (m[k] || 0) + (d.count || 0); });
     return Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 10);
   }, [chartData]);
 
-  const chartTabs = [t('消耗分布'), t('消耗趋势'), t('调用次数分布'), t('调用次数排行')];
+  // Ranking data for "调用排行" — selectable metric. Important: skiapi.dev
+  // bills by tokens, so request count alone misrepresents real usage cost.
+  const rankData = useMemo(() => {
+    const m = {};
+    chartData.forEach(d => {
+      const k = d.model_name || '?';
+      const v = rankMetric === 'token_used' ? (d.token_used || 0)
+              : rankMetric === 'quota' ? (d.quota || 0)
+              : (d.count || 0);
+      m[k] = (m[k] || 0) + v;
+    });
+    return Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  }, [chartData, rankMetric]);
+
+  // Aggregate token total from chart data — used for the "统计 Tokens" metric
+  // since the /api/log/stat endpoint does NOT return a token field.
+  const totalTokensInRange = useMemo(
+    () => chartData.reduce((sum, d) => sum + (d.token_used || 0), 0),
+    [chartData],
+  );
+
+  const chartTabs = [t('消耗分布'), t('消耗趋势'), t('调用次数分布'), t('模型排行')];
+
+  // Truncate long model names for axis labels: "claude-sonnet-4-5" → "claude-sonne…"
+  const truncLabel = (s, n = 14) => {
+    if (!s) return '';
+    return s.length > n ? s.slice(0, n - 1) + '…' : s;
+  };
+
+  // Shared chart styles — grid lines, axis colors, tooltip polish
+  const axisColor = alpha(theme.palette.text.primary, 0.08);
+  const tickColor = alpha(theme.palette.text.secondary, 0.8);
+  const sharedChartSx = {
+    '& .MuiChartsAxis-line': { stroke: axisColor },
+    '& .MuiChartsAxis-tick': { stroke: axisColor },
+    '& .MuiChartsAxis-tickLabel': { fill: tickColor, fontFamily: 'inherit' },
+    '& .MuiChartsGrid-line': { stroke: axisColor, strokeDasharray: '3 3' },
+    '& .MuiAreaElement-root': { fill: 'url(#dashAreaGradient)' },
+    '& .MuiLineElement-root': { strokeWidth: 2.5, filter: `drop-shadow(0 2px 6px ${alpha(C.blue, 0.35)})` },
+    '& .MuiMarkElement-root': { stroke: theme.palette.background.paper, strokeWidth: 2, scale: '0.8' },
+  };
 
   const renderChart = () => {
-    if (chartLoading) return <Skeleton variant="rectangular" height={280} sx={{ borderRadius: 2 }} />;
+    if (chartLoading) return <Skeleton variant="rectangular" height={300} sx={{ borderRadius: 2 }} />;
     if (chartData.length === 0) return (
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 280 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 300 }}>
         <Typography variant="body2" color="text.secondary">{t('暂无数据')}</Typography>
       </Box>
     );
+
+    let chart;
     switch (chartTab) {
-      case 0: return <PieChart series={[{ data: pieData, innerRadius: 55, outerRadius: 110, paddingAngle: 2, cornerRadius: 4, highlightScope: { fade: 'global', highlight: 'item' }, valueFormatter: (v) => fmtQ(v.value) }]} slotProps={{ legend: { direction: 'row', position: { vertical: 'bottom', horizontal: 'middle' }, itemMarkWidth: 8, itemMarkHeight: 8, labelStyle: { fontSize: 10 } } }} height={300} />;
-      case 1: return <LineChart xAxis={[{ data: lineData.labels, scaleType: 'point', tickLabelStyle: { fontSize: 10 } }]} series={[{ data: lineData.quota, label: t('消费额度'), color: C.blue, valueFormatter: fmtQ, area: true }]} height={300} slotProps={{ legend: { itemMarkWidth: 8, itemMarkHeight: 8, labelStyle: { fontSize: 11 } } }} />;
-      case 2: return <BarChart xAxis={[{ scaleType: 'band', data: barData.map(d => d[0]), tickLabelStyle: { fontSize: 9, angle: -30, textAnchor: 'end' } }]} series={[{ data: barData.map(d => d[1]), label: t('调用次数'), color: C.blue }]} height={300} slotProps={{ legend: { hidden: true } }} borderRadius={4} />;
-      case 3: return <BarChart yAxis={[{ scaleType: 'band', data: [...barData].reverse().map(d => d[0]), tickLabelStyle: { fontSize: 10 } }]} series={[{ data: [...barData].reverse().map(d => d[1]), label: t('调用次数'), color: C.blue }]} layout="horizontal" height={300} slotProps={{ legend: { hidden: true } }} borderRadius={4} />;
+      case 0:
+        chart = (
+          <PieChart
+            series={[{
+              data: pieData, innerRadius: 60, outerRadius: 110, paddingAngle: 2, cornerRadius: 6,
+              highlightScope: { fade: 'global', highlight: 'item' },
+              faded: { innerRadius: 60, additionalRadius: -8, color: 'gray' },
+              valueFormatter: (v) => fmtQ(v.value),
+            }]}
+            slotProps={{ legend: { direction: 'horizontal', position: { vertical: 'bottom', horizontal: 'center' } } }}
+            height={300}
+            skipAnimation
+            sx={sharedChartSx}
+          />
+        );
+        break;
+      case 1:
+        chart = (
+          <Box sx={{ position: 'relative' }}>
+            {/* SVG gradient definition for the area fill */}
+            <svg width="0" height="0" style={{ position: 'absolute' }}>
+              <defs>
+                <linearGradient id="dashAreaGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={C.blue} stopOpacity="0.45" />
+                  <stop offset="60%" stopColor={C.blue} stopOpacity="0.15" />
+                  <stop offset="100%" stopColor={C.blue} stopOpacity="0" />
+                </linearGradient>
+              </defs>
+            </svg>
+            <LineChart
+              xAxis={[{ data: lineData.labels, scaleType: 'point', tickLabelStyle: { fontSize: 10 } }]}
+              yAxis={[{ tickLabelStyle: { fontSize: 10 }, valueFormatter: fmtQ }]}
+              series={[{
+                data: lineData.quota,
+                label: t('消费额度'),
+                color: C.blue,
+                valueFormatter: (v) => v == null ? '-' : fmtQ(v),
+                area: true,
+                curve: 'monotoneX',
+                showMark: true,
+              }]}
+              height={300}
+              margin={{ left: 60, right: 20, top: 20, bottom: 40 }}
+              grid={{ horizontal: true }}
+              slotProps={{ legend: { hidden: true } }}
+              skipAnimation
+              sx={sharedChartSx}
+            />
+          </Box>
+        );
+        break;
+      case 2:
+        chart = (
+          <BarChart
+            xAxis={[{
+              scaleType: 'band',
+              data: barData.map(d => truncLabel(d[0], 14)),
+              tickLabelStyle: { fontSize: 10, angle: -35, textAnchor: 'end' },
+              categoryGapRatio: 0.4,
+              tickLabelInterval: () => true,
+              height: 80,
+            }]}
+            yAxis={[{ tickLabelStyle: { fontSize: 10 } }]}
+            series={[{
+              data: barData.map(d => d[1]),
+              label: t('调用次数'),
+              color: C.blue,
+              // Show the full (untruncated) model name in the tooltip
+              valueFormatter: (v, ctx) => `${barData[ctx?.dataIndex]?.[0] || ''}: ${fmtNum(v)}`,
+            }]}
+            height={300}
+            margin={{ left: 50, right: 20, top: 20, bottom: 10 }}
+            grid={{ horizontal: true }}
+            slotProps={{ legend: { hidden: true } }}
+            borderRadius={6}
+            skipAnimation
+            sx={sharedChartSx}
+          />
+        );
+        break;
+      case 3: {
+        // Bottom-to-top: highest first when reversed
+        const rev = [...rankData].reverse();
+        const labelMap = { count: t('调用次数'), quota: t('消费额度'), token_used: t('Token 数') };
+        const fmt = rankMetric === 'quota' ? fmtQ : fmtNum;
+        chart = (
+          <BarChart
+            yAxis={[{
+              scaleType: 'band',
+              data: rev.map(d => truncLabel(d[0], 16)),
+              tickLabelStyle: { fontSize: 10 },
+              categoryGapRatio: 0.4,
+              tickLabelInterval: () => true,
+              width: 130,
+            }]}
+            xAxis={[{ tickLabelStyle: { fontSize: 10 }, valueFormatter: fmt }]}
+            series={[{
+              data: rev.map(d => d[1]),
+              label: labelMap[rankMetric],
+              color: C.blue,
+              valueFormatter: (v, ctx) => `${rev[ctx?.dataIndex]?.[0] || ''}: ${fmt(v)}`,
+            }]}
+            layout="horizontal"
+            height={300}
+            margin={{ left: 10, right: 20, top: 20, bottom: 40 }}
+            grid={{ vertical: true }}
+            slotProps={{ legend: { hidden: true } }}
+            borderRadius={6}
+            skipAnimation
+            sx={sharedChartSx}
+          />
+        );
+        break;
+      }
       default: return null;
     }
+
+    return (
+      <Fade in key={chartTab} timeout={350}>
+        <Box>{chart}</Box>
+      </Fade>
+    );
   };
 
   // API base URL for copy
@@ -366,7 +528,7 @@ export default function Dashboard() {
         <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
           <StatSection icon={DataUsage} title={t('资源消耗')}>
             <MetricRow icon={DataUsage} color={C.orange} label={t('统计额度')} value={renderQuota(stats?.quota || 0)} loading={loading} />
-            <MetricRow icon={Memory} color={C.pink} label={t('统计Tokens')} value={fmtNum(stats?.token_used || stats?.tpm || 0)} loading={loading} />
+            <MetricRow icon={Memory} color={C.pink} label={t('统计Tokens')} value={fmtNum(totalTokensInRange)} loading={loading || chartLoading} />
           </StatSection>
         </Grid>
         <Grid size={{ xs: 12, sm: 6, lg: 3 }}>
@@ -387,10 +549,21 @@ export default function Dashboard() {
                   <PieChartOutline sx={{ fontSize: 18, color: 'text.secondary' }} />
                   <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>{t('模型数据分析')}</Typography>
                 </Stack>
-                <Tabs value={chartTab} onChange={(_, v) => setChartTab(v)} variant="scrollable" scrollButtons="auto"
-                  sx={{ minHeight: 32, '& .MuiTab-root': { minHeight: 32, py: 0.5, px: 1.5, fontSize: '0.75rem' } }}>
-                  {chartTabs.map((tab, i) => <Tab key={i} label={tab} />)}
-                </Tabs>
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                  {chartTab === 3 && (
+                    <ToggleButtonGroup value={rankMetric} exclusive size="small"
+                      onChange={(_, v) => v && setRankMetric(v)}
+                      sx={{ '& .MuiToggleButton-root': { px: 1.2, py: 0.3, fontSize: '0.7rem', textTransform: 'none' } }}>
+                      <ToggleButton value="quota">{t('按额度')}</ToggleButton>
+                      <ToggleButton value="token_used">{t('按 Token')}</ToggleButton>
+                      <ToggleButton value="count">{t('按次数')}</ToggleButton>
+                    </ToggleButtonGroup>
+                  )}
+                  <Tabs value={chartTab} onChange={(_, v) => setChartTab(v)} variant="scrollable" scrollButtons="auto"
+                    sx={{ minHeight: 32, '& .MuiTab-root': { minHeight: 32, py: 0.5, px: 1.5, fontSize: '0.75rem' } }}>
+                    {chartTabs.map((tab, i) => <Tab key={i} label={tab} />)}
+                  </Tabs>
+                </Stack>
               </Stack>
               {renderChart()}
             </CardContent>

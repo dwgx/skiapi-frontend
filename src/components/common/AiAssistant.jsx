@@ -182,7 +182,18 @@ export default function AiAssistant() {
   const [closing, setClosing] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
 
-  const [config, setConfig] = useState({ enabled: true, model: 'gpt-4o-mini', token: '', prompt: '', baseUrl: '', rateLimit: 15 });
+  // Config is now sourced from the public /api/assistant/config endpoint.
+  // The upstream URL and bearer token live ONLY on the backend — we never
+  // touch them here, which is both a security fix (no key leak to the browser)
+  // and the reason the assistant now works for non-admin / anonymous users.
+  const [config, setConfig] = useState({
+    enabled: false,          // wait for /config before showing anything
+    configured: false,
+    model: 'gpt-4o-mini',
+    prompt: '',
+    rateLimit: 15,
+    allowAnonymous: false,
+  });
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -235,22 +246,20 @@ export default function AiAssistant() {
     };
   }, []);
 
-  // Load config
+  // Load config from the public assistant endpoint. Works for everyone
+  // (root admin, regular user, anonymous visitor) and never returns secrets.
   useEffect(() => {
-    const user = localStorage.getItem('user');
-    if (!user) return;
-    API.get('/api/option/', { skipErrorHandler: true })
+    API.get('/api/assistant/config', { skipErrorHandler: true })
       .then(res => {
-        if (res.data.success && Array.isArray(res.data.data)) {
-          const opts = {};
-          res.data.data.forEach(o => { opts[o.key] = o.value; });
+        if (res.data?.success && res.data.data) {
+          const d = res.data.data;
           setConfig({
-            enabled: opts.AiAssistantEnabled !== 'false',
-            model: opts.AiAssistantModel || 'gpt-4o-mini',
-            token: opts.AiAssistantAuth || '',
-            baseUrl: opts.AiAssistantBaseUrl || '',
-            rateLimit: parseInt(opts.AiAssistantRateLimit) || 15,
-            prompt: opts.AiAssistantPrompt || '',
+            enabled: !!d.enabled,
+            configured: !!d.configured,
+            model: d.model || 'gpt-4o-mini',
+            prompt: d.prompt || '',
+            rateLimit: parseInt(d.rate_limit_user) || 15,
+            allowAnonymous: !!d.allow_anonymous,
           });
         }
       })
@@ -293,25 +302,34 @@ PLATFORM CONTEXT:
 ${extra}`;
   }, [config.prompt]);
 
-  // Core LLM call
+  // Core LLM call — always goes through the backend proxy at /api/assistant/chat.
+  // The backend injects the admin-configured bearer token and enforces the
+  // rate limit per-user (logged in) or per-IP (anonymous). No secrets touched here.
   const callLLM = useCallback(async (msgs, { signal, tools = false }) => {
-    const headers = { 'Content-Type': 'application/json' };
-    if (config.token) headers['Authorization'] = `Bearer ${config.token}`;
-    const baseUrl = config.baseUrl ? config.baseUrl.replace(/\/+$/, '') : '';
-    const apiUrl = `${baseUrl}/v1/chat/completions`;
-    const body = { model: config.model, messages: msgs, max_tokens: 1200 };
+    const body = { messages: msgs, max_tokens: 1200 };
     if (tools) body.tools = TOOL_DEFINITIONS;
-    const fetchOpts = { method: 'POST', headers, signal, body: JSON.stringify(body) };
-    if (!baseUrl) fetchOpts.credentials = 'include';
-    console.log('[Cirno] API call →', apiUrl, 'model:', config.model, 'tools:', !!tools, 'msgs:', msgs.length);
-    const res = await fetch(apiUrl, fetchOpts);
+    // `model` is server-side forced; sending it is harmless but we omit it to
+    // make the contract clear.
+    const fetchOpts = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      signal,
+      body: JSON.stringify(body),
+    };
+    console.log('[Cirno] proxy call → /api/assistant/chat, model:', config.model, 'tools:', !!tools, 'msgs:', msgs.length);
+    const res = await fetch('/api/assistant/chat', fetchOpts);
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
-      console.error('[Cirno] API error:', res.status, errText.slice(0, 500));
+      console.error('[Cirno] proxy error:', res.status, errText.slice(0, 500));
+      // 429 is the rate limit — bubble up a friendlier message.
+      if (res.status === 429) throw new Error('rate_limited');
+      if (res.status === 401) throw new Error('login_required');
+      if (res.status === 503) throw new Error('not_configured');
       throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
     }
     return res;
-  }, [config]);
+  }, [config.model]);
 
   const handleSend = async (text) => {
     const msg = (text || input).trim();
@@ -397,11 +415,25 @@ ${extra}`;
     } catch (e) {
       console.error('[Cirno] Error:', e);
       if (e.name !== 'AbortError') {
-        const errMsg = e.message || String(e);
+        // Friendly messages for the structured errors thrown by callLLM.
+        let friendly;
+        switch (e.message) {
+          case 'rate_limited':
+            friendly = '呜…你问得太快了啦！让⑨休息一下嘛～(稍后再试)';
+            break;
+          case 'login_required':
+            friendly = '要和⑨聊天得先登录哦！去右上角登录一下吧～';
+            break;
+          case 'not_configured':
+            friendly = 'あたい现在没法工作啦…管理员还没配好钥匙呢 (o´ｪ`o)';
+            break;
+          default:
+            friendly = e.message || String(e);
+        }
         setMessages(p => {
           const m = [...p].filter(x => !x._tooling);
           if (m.length > 0 && m[m.length - 1].content === '') m.pop();
-          m.push({ role: 'assistant', content: errMsg });
+          m.push({ role: 'assistant', content: friendly });
           return m;
         });
       }
@@ -409,7 +441,14 @@ ${extra}`;
     setLoading(false);
   };
 
+  // Visibility rules:
+  //   - backend must report enabled (implies: configured + admin switch on)
+  //   - if viewer is anonymous, also require allow_anonymous
+  // NB: `isLoggedIn` defined inside checkRate() is out of scope here — must
+  // re-check localStorage in the render path.
   if (!config.enabled) return null;
+  const viewerLoggedIn = !!localStorage.getItem('user');
+  if (!viewerLoggedIn && !config.allowAnonymous) return null;
 
   // ── FAB button ──
   if (!open) {

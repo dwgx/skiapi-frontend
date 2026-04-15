@@ -315,11 +315,25 @@ async function create_token({ name, remain_quota = 500000, unlimited_quota = fal
   if (group) body.group = group;
   const res = await API.post('/api/token/', body);
   if (!res.data.success) throw new Error(res.data.message || 'Failed to create token');
-  const key = res.data.data ? `sk-${res.data.data}` : null;
+  // v0.12.6+: POST no longer returns the key. Look up the new token by name and fetch its key.
+  let key = res.data.data ? `sk-${res.data.data}` : null;
+  if (!key) {
+    try {
+      const listRes = await API.get('/api/token/?p=0&page_size=50');
+      const { items } = extractList(listRes.data);
+      const created = items.find(t => t.name === name);
+      if (created) {
+        const keyRes = await API.post(`/api/token/${created.id}/key`);
+        if (keyRes.data?.success && keyRes.data.data?.key) {
+          key = `sk-${keyRes.data.data.key}`;
+        }
+      }
+    } catch { /* ignore */ }
+  }
   return {
     success: true,
     key,
-    message: key ? `Token created! Key: ${key}` : 'Token created',
+    message: key ? `Token created! Key: ${key}` : 'Token created (key in token list)',
     _action: key ? { type: 'copy', value: key, label: 'Copy API Key' } : null,
   };
 }

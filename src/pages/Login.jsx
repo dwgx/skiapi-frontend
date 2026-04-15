@@ -103,13 +103,17 @@ export default function Login() {
             </form>
           )}
           <Divider sx={{ my: 3 }}>{t('或')}</Divider>
-          <Stack direction="row" spacing={1} justifyContent="center">
+          <Stack direction="row" spacing={1} justifyContent="center" flexWrap="wrap">
             <Typography variant="body2">
               {t('还没有账号？')}<MuiLink component={Link} to="/register">{t('注册')}</MuiLink>
             </Typography>
             <Typography variant="body2">|</Typography>
             <Typography variant="body2">
               <MuiLink component={Link} to="/reset">{t('忘记密码')}</MuiLink>
+            </Typography>
+            <Typography variant="body2">|</Typography>
+            <Typography variant="body2">
+              <MuiLink href="/legacy/">{t('经典 UI')}</MuiLink>
             </Typography>
           </Stack>
         </CardContent>

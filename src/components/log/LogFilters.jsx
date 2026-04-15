@@ -21,7 +21,7 @@ const DATE_PRESETS = [
   { labelKey: '30天', days: 30 },
 ];
 
-export default function LogFilters({ filters, onChange, onApply, onClear, isAdmin }) {
+export default function LogFilters({ filters, onChange, onClear, isAdmin }) {
   const { t } = useTranslation();
 
   const set = (key) => (e) => onChange({ ...filters, [key]: e.target?.value ?? e });
@@ -76,8 +76,6 @@ export default function LogFilters({ filters, onChange, onApply, onClear, isAdmi
 
         <TextField size="small" placeholder={t('请求 ID')} value={filters.request_id || ''}
           onChange={set('request_id')} sx={{ width: 180 }} />
-
-        <Button variant="contained" size="small" onClick={onApply}>{t('筛选')}</Button>
 
         {activeCount > 0 && (
           <Chip icon={<Clear />} label={t('清除筛选')} size="small" variant="outlined"

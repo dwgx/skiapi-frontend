@@ -137,23 +137,22 @@ export default function AppLayout() {
         <SidebarSection title={t('个人中心')} items={personalSection} collapsed={collapsed} selectedKey={selectedKey} onNav={handleNav} user={user} t={t} />
         {user?.role >= 10 && <Divider sx={{ my: 0.5, mx: 2 }} />}
         <SidebarSection title={t('管理员')} items={adminSection} collapsed={collapsed} selectedKey={selectedKey} onNav={handleNav} user={user} t={t} />
-        {/* Classic UI — blends into admin section as a regular nav link */}
-        {user?.role >= 10 && (
-          <List dense disablePadding>
-            <Tooltip title={collapsed ? t('经典 UI') : ''} placement="right">
-              <ListItemButton
-                component="a"
-                href="/legacy/"
-                sx={{ minHeight: 40, justifyContent: collapsed ? 'center' : 'initial', px: collapsed ? 2.5 : 2, opacity: 0.7, '&:hover': { opacity: 1 } }}
-              >
-                <ListItemIcon sx={{ minWidth: 0, mr: collapsed ? 0 : 2, justifyContent: 'center', color: 'text.secondary' }}>
-                  <OpenInNew sx={{ fontSize: 20 }} />
-                </ListItemIcon>
-                {!collapsed && <ListItemText primary={t('经典 UI')} primaryTypographyProps={{ fontSize: '0.875rem', color: 'text.secondary' }} />}
-              </ListItemButton>
-            </Tooltip>
-          </List>
-        )}
+        {/* Classic UI — always accessible for all users (emergency fallback) */}
+        <Divider sx={{ my: 0.5, mx: 2 }} />
+        <List dense disablePadding>
+          <Tooltip title={collapsed ? t('经典 UI') : ''} placement="right">
+            <ListItemButton
+              component="a"
+              href="/legacy/"
+              sx={{ minHeight: 40, justifyContent: collapsed ? 'center' : 'initial', px: collapsed ? 2.5 : 2, opacity: 0.7, '&:hover': { opacity: 1 } }}
+            >
+              <ListItemIcon sx={{ minWidth: 0, mr: collapsed ? 0 : 2, justifyContent: 'center', color: 'text.secondary' }}>
+                <OpenInNew sx={{ fontSize: 20 }} />
+              </ListItemIcon>
+              {!collapsed && <ListItemText primary={t('经典 UI')} primaryTypographyProps={{ fontSize: '0.875rem', color: 'text.secondary' }} />}
+            </ListItemButton>
+          </Tooltip>
+        </List>
       </Box>
       <Divider />
       <Box sx={{ p: 1, display: 'flex', justifyContent: 'center' }}>

@@ -28,17 +28,24 @@ export function AuthProvider({ children }) {
     setUser(null);
   }, []);
 
-  // Auto-refresh user data from API on mount (sync quota, request_count, etc.)
+  // Auto-refresh user data whenever the logged-in identity changes.
+  // IMPORTANT: backend /api/user/login only returns {id, username, display_name,
+  // role, status, group} — it does NOT include quota/used_quota/request_count.
+  // We must re-fetch /api/user/self after every login so Dashboard/TopUp don't
+  // render zeros. Dep on user?.id (not []) ensures this runs on fresh login too.
   useEffect(() => {
-    if (!user) return;
+    if (!user?.id) return;
     API.get('/api/user/self', { skipErrorHandler: true }).then(res => {
       if (res.data?.success && res.data.data) {
-        const fresh = { ...user, ...stripDangerousKeys(res.data.data) };
-        localStorage.setItem('user', JSON.stringify(fresh));
-        setUser(fresh);
+        const clean = stripDangerousKeys(res.data.data);
+        setUser(prev => {
+          const next = { ...prev, ...clean };
+          localStorage.setItem('user', JSON.stringify(next));
+          return next;
+        });
       }
     }).catch(() => {});
-  }, []); // only on mount
+  }, [user?.id]);
 
   const value = { user, login, logout: logoutFn, updateUser, isLoggedIn: !!user, isAdmin: user?.role >= 10, isRoot: user?.role >= 100 };
 

@@ -2,11 +2,11 @@ import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import {
   Box, Card, Table, TableBody, TableCell, TableContainer, TableHead,
   TableRow, TablePagination, Chip, Button, IconButton, Stack, Typography,
-  Tooltip, alpha, useTheme,
+  Tooltip, alpha, useTheme, Menu, MenuItem, ListItemIcon, ListItemText,
 } from '@mui/material';
 import {
   BarChart, Delete, KeyboardArrowDown, KeyboardArrowRight,
-  Speed, Token, MonetizationOn,
+  Speed, Token, MonetizationOn, MoreVert,
 } from '@mui/icons-material';
 import { useTranslation } from 'react-i18next';
 import { API } from '../api';
@@ -54,23 +54,33 @@ export default function Log() {
   const theme = useTheme();
   const { isAdmin } = useAuth();
   const [filters, setFilters] = useState({ ...EMPTY_FILTERS });
-  const [appliedFilters, setAppliedFilters] = useState({ ...EMPTY_FILTERS });
+  // Debounced mirror — updated 350ms after `filters` settles, so typing in
+  // text fields doesn't spam /api/log/ on every keystroke. Select changes
+  // (type, date presets) still go through the debounce for consistency but
+  // feel instant at 350ms.
+  const [debouncedFilters, setDebouncedFilters] = useState({ ...EMPTY_FILTERS });
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [stats, setStats] = useState({ quota: 0, rpm: 0, tpm: 0 });
+  const [moreAnchor, setMoreAnchor] = useState(null);
+
+  useEffect(() => {
+    const handle = setTimeout(() => setDebouncedFilters(filters), 350);
+    return () => clearTimeout(handle);
+  }, [filters]);
 
   const endpoint = isAdmin ? '/api/log/' : '/api/log/self';
   const statEndpoint = isAdmin ? '/api/log/stat' : '/api/log/self/stat';
 
   const extraParams = useMemo(() => {
     const params = {};
-    for (const [k, v] of Object.entries(appliedFilters)) {
+    for (const [k, v] of Object.entries(debouncedFilters)) {
       if (v !== '' && v !== 0 && v !== '0' && v != null) {
         params[k] = String(v);
       }
     }
     return Object.keys(params).length > 0 ? params : undefined;
-  }, [appliedFilters]);
+  }, [debouncedFilters]);
 
   const { items: logs, loading, page, setPage, rowsPerPage, changeRowsPerPage, total, refresh } =
     usePaginatedList(endpoint, { extraParams });
@@ -106,15 +116,13 @@ export default function Log() {
     fetchStats();
   }, [fetchStats]);
 
-  const handleApplyFilters = () => {
-    setAppliedFilters({ ...filters });
+  // Reset to first page whenever applied filters change (debounced).
+  useEffect(() => {
     setPage(0);
-  };
+  }, [debouncedFilters, setPage]);
 
   const handleClearFilters = () => {
     setFilters({ ...EMPTY_FILTERS });
-    setAppliedFilters({ ...EMPTY_FILTERS });
-    setPage(0);
   };
 
   const handleDeleteHistory = async () => {
@@ -161,19 +169,26 @@ export default function Log() {
       <Card sx={{ mb: 2, p: 2.5 }}>
         <Stack direction={{ xs: 'column', md: 'row' }} alignItems={{ xs: 'stretch', md: 'flex-start' }} justifyContent="space-between" spacing={1.5}>
           <Box sx={{ flex: 1, minWidth: 0 }}>
-            <LogFilters filters={filters} onChange={setFilters} onApply={handleApplyFilters}
+            <LogFilters filters={filters} onChange={setFilters}
               onClear={handleClearFilters} isAdmin={isAdmin} />
           </Box>
           {isAdmin && (
-            <Button
-              size="small"
-              color="error"
-              startIcon={<Delete />}
-              onClick={() => setConfirmOpen(true)}
-              sx={{ whiteSpace: 'nowrap', fontSize: '0.75rem', flexShrink: 0, alignSelf: { xs: 'flex-end', md: 'flex-start' } }}
-            >
-              {t('清除历史')}
-            </Button>
+            <Box sx={{ flexShrink: 0, alignSelf: { xs: 'flex-end', md: 'flex-start' } }}>
+              <Tooltip title={t('更多')}>
+                <IconButton size="small" onClick={(e) => setMoreAnchor(e.currentTarget)}
+                  sx={{ color: 'text.secondary' }}>
+                  <MoreVert fontSize="small" />
+                </IconButton>
+              </Tooltip>
+              <Menu anchorEl={moreAnchor} open={Boolean(moreAnchor)} onClose={() => setMoreAnchor(null)}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                transformOrigin={{ vertical: 'top', horizontal: 'right' }}>
+                <MenuItem onClick={() => { setMoreAnchor(null); setConfirmOpen(true); }} sx={{ color: 'error.main' }}>
+                  <ListItemIcon><Delete fontSize="small" color="error" /></ListItemIcon>
+                  <ListItemText primaryTypographyProps={{ fontSize: '0.8rem' }}>{t('清除历史日志')}</ListItemText>
+                </MenuItem>
+              </Menu>
+            </Box>
           )}
         </Stack>
       </Card>

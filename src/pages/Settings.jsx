@@ -135,13 +135,25 @@ export default function Settings() {
             <Grid size={{ xs: 6, sm: 3 }}><TextField fullWidth label={t('重试次数')} type="number" value={opt('RetryTimes', 0)} onChange={setOpt('RetryTimes')} /></Grid>
             <Grid size={{ xs: 6, sm: 3 }}>
               <FormControl fullWidth size="small">
-                <InputLabel>{t('额度显示')}</InputLabel>
-                <Select value={opt('general_setting.quota_display_type', 'USD')} onChange={setOpt('general_setting.quota_display_type')} label={t('额度显示')}>
-                  <MenuItem value="USD">USD</MenuItem>
-                  <MenuItem value="raw">{t('原始值')}</MenuItem>
+                <InputLabel>{t('货币单位')}</InputLabel>
+                <Select value={opt('general_setting.quota_display_type', 'USD')} onChange={setOpt('general_setting.quota_display_type')} label={t('货币单位')}>
+                  <MenuItem value="USD">USD ($)</MenuItem>
+                  <MenuItem value="CNY">CNY (¥)</MenuItem>
+                  <MenuItem value="TOKENS">{t('原始值 (Tokens)')}</MenuItem>
+                  <MenuItem value="CUSTOM">{t('自定义')}</MenuItem>
                 </Select>
               </FormControl>
             </Grid>
+            {opt('general_setting.quota_display_type') === 'CUSTOM' && (
+              <>
+                <Grid size={{ xs: 6, sm: 3 }}>
+                  <TextField fullWidth label={t('自定义货币符号')} value={opt('general_setting.custom_currency_symbol', '¤')} onChange={setOpt('general_setting.custom_currency_symbol')} />
+                </Grid>
+                <Grid size={{ xs: 6, sm: 3 }}>
+                  <TextField fullWidth label={t('自定义汇率 (相对USD)')} type="number" value={opt('general_setting.custom_currency_exchange_rate', 1)} onChange={setOpt('general_setting.custom_currency_exchange_rate')} />
+                </Grid>
+              </>
+            )}
             <Grid size={12}>
               <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
                 <FormControlLabel control={<Switch checked={!!opt('DisplayTokenStatEnabled')} onChange={setBoolOpt('DisplayTokenStatEnabled')} />} label={t('显示Token统计')} />
@@ -151,7 +163,7 @@ export default function Settings() {
               </Stack>
             </Grid>
           </Grid>
-          <SaveBtn keys={['TopUpLink', 'general_setting.docs_link', 'QuotaPerUnit', 'USDExchangeRate', 'RetryTimes', 'general_setting.quota_display_type']} />
+          <SaveBtn keys={['TopUpLink', 'general_setting.docs_link', 'QuotaPerUnit', 'USDExchangeRate', 'RetryTimes', 'general_setting.quota_display_type', 'general_setting.custom_currency_symbol', 'general_setting.custom_currency_exchange_rate']} />
         </SC>
 
         <SC title={t('额度设置')}>
@@ -160,8 +172,73 @@ export default function Settings() {
             <Grid size={{ xs: 6, sm: 3 }}><TextField fullWidth label={t('预扣额度')} type="number" value={opt('PreConsumedQuota', 0)} onChange={setOpt('PreConsumedQuota')} /></Grid>
             <Grid size={{ xs: 6, sm: 3 }}><TextField fullWidth label={t('邀请人奖励')} type="number" value={opt('QuotaForInviter', 0)} onChange={setOpt('QuotaForInviter')} /></Grid>
             <Grid size={{ xs: 6, sm: 3 }}><TextField fullWidth label={t('被邀请人奖励')} type="number" value={opt('QuotaForInvitee', 0)} onChange={setOpt('QuotaForInvitee')} /></Grid>
+            <Grid size={{ xs: 6, sm: 3 }}>
+              <TextField fullWidth label={t('单用户最大令牌数')} type="number" value={opt('token_setting.max_user_tokens', 0)} onChange={setOpt('token_setting.max_user_tokens')}
+                helperText={t('0 表示不限制')} />
+            </Grid>
           </Grid>
-          <SaveBtn keys={['QuotaForNewUser', 'PreConsumedQuota', 'QuotaForInviter', 'QuotaForInvitee']} />
+          <SaveBtn keys={['QuotaForNewUser', 'PreConsumedQuota', 'QuotaForInviter', 'QuotaForInvitee', 'token_setting.max_user_tokens']} />
+        </SC>
+
+        <SC title={t('敏感词管理')}>
+          <Grid container spacing={2}>
+            <Grid size={12}>
+              <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                <FormControlLabel control={<Switch checked={!!opt('CheckSensitiveEnabled')} onChange={setBoolOpt('CheckSensitiveEnabled')} />} label={t('启用敏感词检测')} />
+                <FormControlLabel control={<Switch checked={!!opt('CheckSensitiveOnPromptEnabled')} onChange={setBoolOpt('CheckSensitiveOnPromptEnabled')} />} label={t('检测请求 prompt')} />
+                <FormControlLabel control={<Switch checked={!!opt('StopOnSensitiveEnabled')} onChange={setBoolOpt('StopOnSensitiveEnabled')} />} label={t('命中后立即停止')} />
+              </Stack>
+            </Grid>
+            <Grid size={12}>
+              <TextField fullWidth label={t('敏感词列表')} multiline rows={6}
+                value={opt('SensitiveWords', '')} onChange={setOpt('SensitiveWords')}
+                helperText={t('每行一个，或用逗号分隔。命中后将根据上方策略处理请求。')}
+                sx={{ '& textarea': { fontFamily: 'monospace', fontSize: '0.85rem' } }} />
+            </Grid>
+          </Grid>
+          <SaveBtn keys={['SensitiveWords']} />
+        </SC>
+
+        <SC title={t('自动处理策略')}>
+          <Grid container spacing={2}>
+            <Grid size={12}>
+              <TextField fullWidth multiline rows={3} label={t('自动禁用关键词')}
+                value={opt('AutomaticDisableKeywords', '')} onChange={setRawOpt('AutomaticDisableKeywords')}
+                helperText={t('每行一个关键词或用逗号分隔。示例: invalid_api_key, insufficient_quota')}
+                sx={{ '& textarea': { fontFamily: 'monospace', fontSize: '0.85rem' } }} />
+            </Grid>
+            <Grid size={12}>
+              <TextField fullWidth label={t('自动禁用状态码')}
+                value={opt('AutomaticDisableStatusCodes', '')} onChange={setRawOpt('AutomaticDisableStatusCodes')}
+                helperText={t('范围格式，逗号分隔。示例: 401  或  401-403  或  401,500-503')}
+                sx={{ '& input': { fontFamily: 'monospace' } }} />
+            </Grid>
+            <Grid size={12}>
+              <TextField fullWidth label={t('自动重试状态码')}
+                value={opt('AutomaticRetryStatusCodes', '')} onChange={setRawOpt('AutomaticRetryStatusCodes')}
+                helperText={t('范围格式，逗号分隔。示例: 502-504  或  500,502-504')}
+                sx={{ '& input': { fontFamily: 'monospace' } }} />
+            </Grid>
+          </Grid>
+          <SaveBtn keys={['AutomaticDisableKeywords', 'AutomaticDisableStatusCodes', 'AutomaticRetryStatusCodes']} />
+        </SC>
+
+        <SC title={t('渠道亲和力 (Channel Affinity)')}>
+          <Grid container spacing={2}>
+            <Grid size={12}>
+              <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                <FormControlLabel control={<Switch checked={!!opt('channel_affinity_setting.enabled')} onChange={setBoolOpt('channel_affinity_setting.enabled')} />} label={t('启用渠道亲和力')} />
+                <FormControlLabel control={<Switch checked={!!opt('channel_affinity_setting.switch_on_success')} onChange={setBoolOpt('channel_affinity_setting.switch_on_success')} />} label={t('成功时切换记录')} />
+              </Stack>
+            </Grid>
+            <Grid size={{ xs: 6, sm: 3 }}><TextField fullWidth label={t('最大缓存条目')} type="number" value={opt('channel_affinity_setting.max_entries', 1000)} onChange={setOpt('channel_affinity_setting.max_entries')} /></Grid>
+            <Grid size={{ xs: 6, sm: 3 }}><TextField fullWidth label={t('默认 TTL (秒)')} type="number" value={opt('channel_affinity_setting.default_ttl_seconds', 600)} onChange={setOpt('channel_affinity_setting.default_ttl_seconds')} /></Grid>
+            <Grid size={12}>
+              <JsonField label={t('亲和力规则 (JSON)')} value={opt('channel_affinity_setting.rules', '[]')} onChange={setRawOpt('channel_affinity_setting.rules')} rows={5}
+                helperText={t('为不同的模型/路径定义渠道粘性规则')} />
+            </Grid>
+          </Grid>
+          <SaveBtn keys={['channel_affinity_setting.max_entries', 'channel_affinity_setting.default_ttl_seconds', 'channel_affinity_setting.rules']} />
         </SC>
 
         <SC title={t('监控设置')}>
@@ -289,16 +366,23 @@ export default function Settings() {
               <JsonField label={t('支付方式 (JSON)')} value={opt('PayMethods', '[]')} onChange={setRawOpt('PayMethods')} rows={3} />
             </Grid>
             <Grid size={{ xs: 12, sm: 6 }}>
-              <JsonField label={t('金额选项 (JSON)')} value={opt('AmountOptions', '[]')} onChange={setRawOpt('AmountOptions')} rows={3} />
+              <JsonField label={t('充值档位 金额选项 (JSON)')} value={opt('payment_setting.amount_options', '[10,20,50,100,200,500]')} onChange={setRawOpt('payment_setting.amount_options')} rows={3}
+                helperText={t('例如: [10, 20, 50, 100, 200, 500]')} />
             </Grid>
             <Grid size={{ xs: 12, sm: 6 }}>
-              <JsonField label={t('分组比例 (JSON)')} value={opt('TopupGroupRatio', '{}')} onChange={setRawOpt('TopupGroupRatio')} rows={3} />
+              <JsonField label={t('分组比例 (JSON)')} value={opt('TopupGroupRatio', '{"default":1}')} onChange={setRawOpt('TopupGroupRatio')} rows={3}
+                helperText={t('例如: {"default":1, "vip":0.9}')} />
             </Grid>
             <Grid size={{ xs: 12, sm: 6 }}>
-              <JsonField label={t('金额折扣 (JSON)')} value={opt('AmountDiscount', '{}')} onChange={setRawOpt('AmountDiscount')} rows={3} />
+              <JsonField label={t('充值档位 金额折扣 (JSON)')} value={opt('payment_setting.amount_discount', '{}')} onChange={setRawOpt('payment_setting.amount_discount')} rows={3}
+                helperText={t('例如: {"100": 0.95, "500": 0.85} (100元9.5折)')} />
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6 }}>
+              <TextField fullWidth label={t('自定义回调地址')} value={opt('CustomCallbackAddress')} onChange={setOpt('CustomCallbackAddress')}
+                helperText={t('留空使用默认 ServerAddress')} />
             </Grid>
           </Grid>
-          <SaveBtn keys={['PayAddress', 'EpayId', 'EpayKey', 'Price', 'MinTopUp', 'PayMethods', 'AmountOptions', 'TopupGroupRatio', 'AmountDiscount']} />
+          <SaveBtn keys={['PayAddress', 'CustomCallbackAddress', 'EpayId', 'EpayKey', 'Price', 'MinTopUp', 'PayMethods', 'payment_setting.amount_options', 'TopupGroupRatio', 'payment_setting.amount_discount']} />
         </SC>
 
         <SC title="Stripe">
@@ -532,6 +616,16 @@ export default function Settings() {
           </Grid>
           <SaveBtn keys={['performance_setting.monitor_cpu_threshold', 'performance_setting.monitor_memory_threshold', 'performance_setting.monitor_disk_threshold']} />
         </SC>
+
+        <SC title={t('流式响应缓冲')}>
+          <Grid container spacing={2}>
+            <Grid size={{ xs: 6, sm: 3 }}>
+              <TextField fullWidth label={t('流缓存队列长度')} type="number" value={opt('StreamCacheQueueLength', 0)} onChange={setOpt('StreamCacheQueueLength')}
+                helperText={t('流式响应转发缓冲区大小，0 表示同步转发')} />
+            </Grid>
+          </Grid>
+          <SaveBtn keys={['StreamCacheQueueLength']} />
+        </SC>
       </TabPanel>
 
       {/* ============ Tab 10: 系统设置 ============ */}
@@ -579,12 +673,42 @@ export default function Settings() {
           <SaveBtn keys={['SMTPServer', 'SMTPPort', 'SMTPAccount', 'SMTPFrom', 'SMTPToken']} />
         </SC>
 
+        <SC title={t('邮箱注册限制')}>
+          <Grid container spacing={2}>
+            <Grid size={12}>
+              <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
+                <FormControlLabel control={<Switch checked={!!opt('EmailDomainRestrictionEnabled')} onChange={setBoolOpt('EmailDomainRestrictionEnabled')} />} label={t('限制邮箱域名')} />
+                <FormControlLabel control={<Switch checked={!!opt('EmailAliasRestrictionEnabled')} onChange={setBoolOpt('EmailAliasRestrictionEnabled')} />} label={t('禁止邮箱别名 (+号)')} />
+              </Stack>
+            </Grid>
+            <Grid size={12}>
+              <TextField fullWidth multiline rows={4} label={t('邮箱域名白名单')}
+                value={opt('EmailDomainWhitelist', '')} onChange={setOpt('EmailDomainWhitelist')}
+                helperText={t('每行一个域名，如 gmail.com')}
+                sx={{ '& textarea': { fontFamily: 'monospace', fontSize: '0.85rem' } }} />
+            </Grid>
+          </Grid>
+          <SaveBtn keys={['EmailDomainWhitelist']} />
+        </SC>
+
         <SC title="GitHub OAuth">
           <Grid container spacing={2}>
             <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label="Client ID" value={opt('GitHubClientId')} onChange={setOpt('GitHubClientId')} /></Grid>
             <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label="Client Secret" type="password" value={opt('GitHubClientSecret')} onChange={setOpt('GitHubClientSecret')} /></Grid>
           </Grid>
           <SaveBtn keys={['GitHubClientId', 'GitHubClientSecret']} />
+        </SC>
+
+        <SC title="LinuxDO OAuth">
+          <Grid container spacing={2}>
+            <Grid size={{ xs: 12, sm: 5 }}><TextField fullWidth label="Client ID" value={opt('LinuxDOClientId')} onChange={setOpt('LinuxDOClientId')} /></Grid>
+            <Grid size={{ xs: 12, sm: 5 }}><TextField fullWidth label="Client Secret" type="password" value={opt('LinuxDOClientSecret')} onChange={setOpt('LinuxDOClientSecret')} /></Grid>
+            <Grid size={{ xs: 12, sm: 2 }}>
+              <TextField fullWidth label={t('最低信任等级')} type="number" value={opt('LinuxDOMinimumTrustLevel', 0)} onChange={setOpt('LinuxDOMinimumTrustLevel')}
+                helperText="0-4" />
+            </Grid>
+          </Grid>
+          <SaveBtn keys={['LinuxDOClientId', 'LinuxDOClientSecret', 'LinuxDOMinimumTrustLevel']} />
         </SC>
 
         <SC title="Discord OAuth">
@@ -602,8 +726,15 @@ export default function Settings() {
             <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label="Client Secret" type="password" value={opt('oidc.client_secret')} onChange={setOpt('oidc.client_secret')} /></Grid>
             <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label="Discovery URL" value={opt('oidc.discovery_url')} onChange={setOpt('oidc.discovery_url')} /></Grid>
             <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label={t('显示名称')} value={opt('oidc.provider_name')} onChange={setOpt('oidc.provider_name')} /></Grid>
+            <Grid size={12}>
+              <Typography variant="caption" color="text.secondary">{t('高级 (留空则从 Discovery URL 自动获取)')}</Typography>
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label="Well-Known URL" value={opt('oidc.well_known')} onChange={setOpt('oidc.well_known')} /></Grid>
+            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label="Authorization Endpoint" value={opt('oidc.authorization_endpoint')} onChange={setOpt('oidc.authorization_endpoint')} /></Grid>
+            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label="Token Endpoint" value={opt('oidc.token_endpoint')} onChange={setOpt('oidc.token_endpoint')} /></Grid>
+            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label="UserInfo Endpoint" value={opt('oidc.user_info_endpoint')} onChange={setOpt('oidc.user_info_endpoint')} /></Grid>
           </Grid>
-          <SaveBtn keys={['oidc.client_id', 'oidc.client_secret', 'oidc.discovery_url', 'oidc.provider_name']} />
+          <SaveBtn keys={['oidc.client_id', 'oidc.client_secret', 'oidc.discovery_url', 'oidc.provider_name', 'oidc.well_known', 'oidc.authorization_endpoint', 'oidc.token_endpoint', 'oidc.user_info_endpoint']} />
         </SC>
 
         <SC title={t('Turnstile 配置')}>
@@ -626,10 +757,18 @@ export default function Settings() {
               </Stack>
               <Typography variant="caption" color="text.secondary">{t('启用后，网站右下角会显示 AI 助手浮动图标，用户可与 AI 对话获取帮助')}</Typography>
             </Grid>
-            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label="API Base URL" value={opt('AiAssistantBaseUrl')} onChange={setOpt('AiAssistantBaseUrl')} placeholder={t('留空使用本站 /v1')} helperText={t('可填外部地址如 https://api.openai.com 或留空用本站')} /></Grid>
-            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label={t('专用 API Token')} value={opt('AiAssistantAuth')} onChange={setOpt('AiAssistantAuth')} placeholder="sk-xxx" type="password" helperText={t('Bearer Token，本站令牌或外部 API Key')} /></Grid>
+            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label="API Base URL" value={opt('AiAssistantBaseUrl')} onChange={setOpt('AiAssistantBaseUrl')} placeholder="https://skiapi.dev" helperText={t('必填。填本站地址或外部兼容 OpenAI 的服务地址')} /></Grid>
+            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label={t('专用 API Token')} value={opt('AiAssistantAuth')} onChange={setOpt('AiAssistantAuth')} placeholder="sk-xxx" type="password" helperText={t('必填。仅保存于服务端，不会下发到浏览器')} /></Grid>
             <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label={t('助手使用模型')} value={opt('AiAssistantModel')} onChange={setOpt('AiAssistantModel')} placeholder="gpt-4o-mini" helperText={t('建议用低成本模型控制费用')} /></Grid>
-            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label={t('登录用户限流 (次/分钟)')} type="number" value={opt('AiAssistantRateLimit')} onChange={setOpt('AiAssistantRateLimit')} placeholder="15" helperText={t('未登录用户固定 3 次/分钟')} /></Grid>
+            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label={t('登录用户限流 (次/分钟)')} type="number" value={opt('AiAssistantRateLimit')} onChange={setOpt('AiAssistantRateLimit')} placeholder="15" /></Grid>
+            <Grid size={{ xs: 12, sm: 6 }}>
+              <Stack direction="row" spacing={2} alignItems="center">
+                <Typography variant="body2">{t('允许未登录用户使用')}</Typography>
+                <Switch checked={toBoolean(opt('AiAssistantAllowAnonymous'))} onChange={setBoolOpt('AiAssistantAllowAnonymous')} />
+              </Stack>
+              <Typography variant="caption" color="text.secondary">{t('开启后，匿名访客也能使用助手（按 IP 限流）')}</Typography>
+            </Grid>
+            <Grid size={{ xs: 12, sm: 6 }}><TextField fullWidth label={t('匿名用户限流 (次/分钟)')} type="number" value={opt('AiAssistantAnonRateLimit')} onChange={setOpt('AiAssistantAnonRateLimit')} placeholder="3" helperText={t('匿名访客按 IP 限流，默认 3 次/分钟')} /></Grid>
             <Grid size={12}><TextField fullWidth label={t('系统提示词')} multiline rows={4} value={opt('AiAssistantPrompt')} onChange={setOpt('AiAssistantPrompt')}
               placeholder={t('你是本站的 AI 客服助手。请用简洁友好的中文回答用户关于平台使用的问题。')}
               helperText={t('定义助手角色、能力范围和回答风格')} /></Grid>
@@ -640,7 +779,7 @@ export default function Settings() {
               }}>{t('填入推荐提示词')}</Button>
             </Grid>
           </Grid>
-          <SaveBtn keys={['AiAssistantEnabled', 'AiAssistantBaseUrl', 'AiAssistantModel', 'AiAssistantAuth', 'AiAssistantPrompt', 'AiAssistantRateLimit']} />
+          <SaveBtn keys={['AiAssistantEnabled', 'AiAssistantBaseUrl', 'AiAssistantModel', 'AiAssistantAuth', 'AiAssistantPrompt', 'AiAssistantRateLimit', 'AiAssistantAllowAnonymous', 'AiAssistantAnonRateLimit']} />
         </SC>
         <SC title={t('页面内容')}>
           <Grid container spacing={2}>

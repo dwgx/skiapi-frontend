@@ -7,10 +7,10 @@ import {
 } from '@mui/material';
 import {
   AccountBalanceWallet, Redeem, ContentCopy, Share, History,
-  CardGiftcard, TrendingUp, DataUsage, ArrowUpward,
+  CardGiftcard, TrendingUp, DataUsage, ArrowUpward, Payment, CreditCard,
 } from '@mui/icons-material';
 import { API } from '../api';
-import { showError, showSuccess, renderQuota, timestamp2string, safeArray, copy } from '../utils';
+import { showError, showSuccess, renderQuota, renderNumber, getQuotaDisplayType, timestamp2string, safeArray, copy } from '../utils';
 import { useAuth } from '../contexts/AuthContext';
 import PageHeader from '../components/common/PageHeader';
 import EmptyState from '../components/common/EmptyState';
@@ -74,9 +74,45 @@ export default function TopUp() {
   const [loading, setLoading] = useState(true);
   const [affiliateLink, setAffiliateLink] = useState('');
 
+  // Online top-up state
+  const [topupInfo, setTopupInfo] = useState(null);
+  const [topUpCount, setTopUpCount] = useState(0);
+  const [selectedPay, setSelectedPay] = useState('');
+  const [paying, setPaying] = useState(false);
+  // Pre-calculated fiat payment amount returned by /api/user/amount.
+  // We don't trust client-side math because the backend factors in group ratio,
+  // discount tiers, and token→USD conversion — all of which can change.
+  const [payAmount, setPayAmount] = useState(null);
+  const [calcLoading, setCalcLoading] = useState(false);
+  const quotaDisplayType = getQuotaDisplayType();
+  const isTokens = quotaDisplayType === 'TOKENS';
+
+  // Format an amount_option for display. In TOKENS mode the raw value is a
+  // token count (e.g. 200000000 → "200M"); in USD mode it's a dollar figure.
+  const formatAmount = (v) => isTokens ? renderNumber(v) : `$${v}`;
+
+  // Look up the discount multiplier (0 < d <= 1) for the current tier.
+  // Backend returns a map[string]float64 keyed by amount string, so check both.
+  const getDiscount = (amount) => {
+    const d = topupInfo?.discount;
+    if (!d || !amount) return null;
+    const hit = d[amount] ?? d[String(amount)];
+    if (hit && hit > 0 && hit < 1) return hit;
+    return null;
+  };
+  const currentDiscount = getDiscount(topUpCount);
+
   useEffect(() => {
     API.get('/api/user/topup/self').then(res => {
       if (res.data.success) setTopups(safeArray(res.data.data));
+    }).catch(() => {});
+    // Fetch available online top-up methods + amount options
+    API.get('/api/user/topup/info').then(res => {
+      if (res.data.success) {
+        setTopupInfo(res.data.data);
+        const opts = res.data.data?.amount_options;
+        if (Array.isArray(opts) && opts.length) setTopUpCount(opts[0]);
+      }
     }).catch(() => {});
     // Generate affiliate link
     if (user?.aff_code) {
@@ -84,6 +120,82 @@ export default function TopUp() {
     }
     setLoading(false);
   }, [user]);
+
+  // Debounced pre-calculation of the actual fiat payment amount.
+  // Fires /api/user/amount whenever topUpCount or the chosen pay method changes.
+  // Stripe has its own endpoint because its min/fees can differ.
+  useEffect(() => {
+    if (!topupInfo || !topUpCount || topUpCount <= 0) { setPayAmount(null); return; }
+    const isStripe = selectedPay === 'stripe';
+    const endpoint = isStripe ? '/api/user/stripe/amount' : '/api/user/amount';
+    const handle = setTimeout(async () => {
+      setCalcLoading(true);
+      try {
+        const res = await API.post(endpoint, {
+          amount: parseInt(topUpCount),
+          payment_method: isStripe ? 'stripe' : (selectedPay || 'alipay'),
+        });
+        if (res.data?.message === 'success') {
+          // Backend returns the final price as res.data.data (string or number).
+          const val = Number(res.data.data);
+          if (!Number.isNaN(val)) setPayAmount(val);
+          else setPayAmount(null);
+        } else {
+          setPayAmount(null);
+        }
+      } catch {
+        setPayAmount(null);
+      } finally {
+        setCalcLoading(false);
+      }
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [topUpCount, selectedPay, topupInfo]);
+
+  const handleOnlinePay = async (method) => {
+    if (!topupInfo) return;
+    const isStripe = method === 'stripe';
+    if (isStripe && !topupInfo.enable_stripe_topup) return showError(t('管理员未开启Stripe充值！'));
+    if (!isStripe && !topupInfo.enable_online_topup) return showError(t('管理员未开启在线充值！'));
+    const min = isStripe ? (topupInfo.stripe_min_topup || 1) : (topupInfo.min_topup || 1);
+    if (!topUpCount || topUpCount < min) return showError(t('充值数量不能小于') + min);
+
+    setSelectedPay(method);
+    setPaying(true);
+    try {
+      if (isStripe) {
+        const res = await API.post('/api/user/stripe/pay', { amount: parseInt(topUpCount), payment_method: 'stripe' });
+        if (res.data?.message === 'success' && res.data.data?.pay_link) {
+          window.open(res.data.data.pay_link, '_blank');
+        } else {
+          showError(res.data?.data || res.data?.message || t('支付失败'));
+        }
+      } else {
+        const res = await API.post('/api/user/pay', { amount: parseInt(topUpCount), payment_method: method });
+        if (res.data?.message === 'success') {
+          // epay: POST form submission
+          const params = res.data.data;
+          const url = res.data.url;
+          const form = document.createElement('form');
+          form.action = url; form.method = 'POST'; form.target = '_blank';
+          for (const k in params) {
+            const inp = document.createElement('input');
+            inp.type = 'hidden'; inp.name = k; inp.value = params[k];
+            form.appendChild(inp);
+          }
+          document.body.appendChild(form);
+          form.submit();
+          document.body.removeChild(form);
+        } else {
+          showError(res.data?.data || res.data?.message || t('支付失败'));
+        }
+      }
+    } catch (err) {
+      showError(err);
+    } finally {
+      setPaying(false);
+    }
+  };
 
   const handleRedeem = async () => {
     if (!redeemCode) return showError(t('请输入兑换码'));
@@ -131,6 +243,105 @@ export default function TopUp() {
             gradient="linear-gradient(135deg, #9c27b0, #ba68c8)" />
         </Grid>
       </Grid>
+
+      {/* ── Online Recharge ── */}
+      {topupInfo && (topupInfo.enable_online_topup || topupInfo.enable_stripe_topup) && (
+        <Box sx={{ mb: 3 }}>
+          <SectionCard icon={Payment} title={t('在线充值')} color={theme.palette.success.main}>
+            <Stack spacing={2}>
+              <Box>
+                <Typography variant="caption" sx={{ color: 'text.secondary', mb: 1, display: 'block' }}>
+                  {t('充值数量')}
+                </Typography>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1.5 }}>
+                  {(topupInfo.amount_options || []).map(opt => {
+                    const d = getDiscount(opt);
+                    return (
+                      <Chip
+                        key={opt}
+                        label={d ? `${formatAmount(opt)} · ${(d * 10).toFixed(1)}${t('折')}` : formatAmount(opt)}
+                        clickable
+                        color={topUpCount === opt ? 'primary' : 'default'}
+                        variant={topUpCount === opt ? 'filled' : 'outlined'}
+                        onClick={() => setTopUpCount(opt)}
+                      />
+                    );
+                  })}
+                </Stack>
+                <TextField
+                  type="number"
+                  fullWidth
+                  size="small"
+                  label={isTokens ? t('充值数量 (tokens)') : t('充值金额')}
+                  value={topUpCount}
+                  onChange={e => setTopUpCount(Number(e.target.value) || 0)}
+                  inputProps={{ min: topupInfo.min_topup || 1 }}
+                  helperText={`${t('最低充值')}: ${formatAmount(topupInfo.min_topup || 1)}`}
+                />
+                {/* Real payment amount preview — pulled from backend so token→fiat conversion and discount are always accurate. */}
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5, flexWrap: 'wrap' }} useFlexGap>
+                  <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                    {t('实付金额')}:
+                  </Typography>
+                  <Typography variant="h6" sx={{ fontWeight: 700, color: 'success.main' }}>
+                    {calcLoading ? <CircularProgress size={14} /> : (payAmount != null ? `¥${payAmount.toFixed(2)}` : '—')}
+                  </Typography>
+                  {currentDiscount && (
+                    <Chip
+                      size="small"
+                      color="warning"
+                      label={`${(currentDiscount * 10).toFixed(1)}${t('折')}`}
+                      sx={{ fontWeight: 600 }}
+                    />
+                  )}
+                  {isTokens && topUpCount > 0 && (
+                    <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                      ({renderNumber(topUpCount)} tokens)
+                    </Typography>
+                  )}
+                </Stack>
+              </Box>
+              <Divider />
+              <Box>
+                <Typography variant="caption" sx={{ color: 'text.secondary', mb: 1, display: 'block' }}>
+                  {t('选择支付方式')}
+                </Typography>
+                <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
+                  {topupInfo.enable_online_topup && (topupInfo.pay_methods || []).map(m => (
+                    <Button
+                      key={m.type}
+                      variant="outlined"
+                      startIcon={<Payment />}
+                      disabled={paying && selectedPay === m.type}
+                      onClick={() => handleOnlinePay(m.type)}
+                      sx={{ borderRadius: 3, minWidth: 120 }}
+                    >
+                      {paying && selectedPay === m.type ? <CircularProgress size={16} /> : m.name}
+                    </Button>
+                  ))}
+                  {topupInfo.enable_stripe_topup && (
+                    <Button
+                      variant="outlined"
+                      startIcon={<CreditCard />}
+                      disabled={paying && selectedPay === 'stripe'}
+                      onClick={() => handleOnlinePay('stripe')}
+                      sx={{ borderRadius: 3, minWidth: 120 }}
+                    >
+                      {paying && selectedPay === 'stripe' ? <CircularProgress size={16} /> : 'Stripe'}
+                    </Button>
+                  )}
+                </Stack>
+              </Box>
+            </Stack>
+          </SectionCard>
+        </Box>
+      )}
+
+      {topupInfo && !topupInfo.enable_online_topup && !topupInfo.enable_stripe_topup && (
+        <Alert severity="info" sx={{ mb: 3, borderRadius: 2 }}>
+          {t('管理员未开启在线充值功能，请联系管理员开启或使用兑换码充值。')}
+        </Alert>
+      )}
 
       <Grid container spacing={2.5}>
         {/* ── Redeem Code ── */}
