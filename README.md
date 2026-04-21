@@ -1,16 +1,40 @@
-# React + Vite
+# SKIAPI Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+SKIAPI 的 Admin 控制台前端，对接 [NewAPI](https://github.com/Calcium-Ion/new-api)。
 
-Currently, two official plugins are available:
+基于 **React 19 + Vite + MUI v7**。
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+---
 
-## React Compiler
+## 技术栈
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- React 19
+- Vite
+- MUI (Material UI) v7
+- ESLint
 
-## Expanding the ESLint configuration
+## 开发
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```bash
+git clone https://github.com/dwgx/skiapi-frontend.git
+cd skiapi-frontend
+npm install
+npm run dev
+```
+
+## 构建
+
+```bash
+npm run build
+```
+
+预览构建产物：
+
+```bash
+npm run preview
+```
+
+## 相关项目
+
+- [NewAPI](https://github.com/Calcium-Ion/new-api) — 后端网关
+- [YuKiKo](https://github.com/dwgx/YuKiKo) — SKIAPI 配套项目
