@@ -14,7 +14,7 @@
   "dependencies": {
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
-    "@fontsource/geist": "^5.2.8",
+    "@fontsource/geist": "^5.2.9",
     "@fontsource/geist-mono": "^5.2.7",
     "@fontsource/instrument-serif": "^5.2.8",
     "@fontsource/inter": "^5.2.8",
