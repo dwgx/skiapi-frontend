@@ -187,4 +187,18 @@ Active development. Version `0.0.0` (unversioned). Used against real deployments
 
 ## License / 许可证
 
-MIT License — see [`LICENSE`](./LICENSE).
+**GNU AGPL-3.0** — see [`LICENSE`](./LICENSE).
+
+> 本仓库原为 MIT。自加入 `src/features/chat/` 聊天模块起改为 AGPL-3.0：该模块的
+> 流式编排、思维链解析、消息模型与持久化算法派生自
+> [New API](https://github.com/Calcium-Ion/new-api)（Copyright © 2023-2026 QuantumNous，
+> AGPL-3.0），AGPL 的传染性要求整个派生作品同以 AGPL-3.0 分发。
+>
+> **AGPL §13（网络交互条款）**：任何人通过网络使用本软件的修改版本时，运营方必须
+> 向其提供对应完整源码。本仓库公开即满足该义务；若部署了未公开的修改版，
+> 需在服务界面提供源码获取途径。
+>
+> 商业授权（如需摆脱 AGPL 义务）联系 New API 上游：support@quantumnous.com。
+
+Files under `src/features/chat/` carry their own AGPL notices identifying the
+derived portions. The rest of the repository is authored by dwgx.
