@@ -282,10 +282,16 @@ export default function ChatApp() {
   }, [handler, newSession, resetSessionUsage]);
 
   const deleteSessionSafe = useCallback((id) => {
-    handler.stop();
-    resetSessionUsage();
+    // 只有删的是**当前**会话才需要中止流和清用量。
+    // 之前无条件 stop()：在 A 里流式生成时删掉侧栏的 B，A 的回复会被
+    // 打断并标成 INTERRUPTED、用量清零 —— 用户删的是别的会话，
+    // 正在看的生成却断了。
+    if (id === activeId) {
+      handler.stop();
+      resetSessionUsage();
+    }
     deleteSession(id);
-  }, [handler, deleteSession, resetSessionUsage]);
+  }, [handler, deleteSession, resetSessionUsage, activeId]);
 
   // 取某个会话的消息：当前会话用内存里的，其他会话从 localStorage 读
   const messagesOf = useCallback((id) => (
@@ -297,9 +303,12 @@ export default function ChatApp() {
     return buildExportPayload({
       title: s?.title,
       messages: messagesOf(id),
-      model: config.model,
+      // 只有当前会话才知道用的是哪个模型（config.model 是全局选中值）。
+      // 导出别的会话时填它会撒谎 —— 用 GPT 聊的旧会话会被标成当前选的 Claude。
+      // 会话对象里没存 model，所以宁可留空也不给错信息。
+      model: id === activeId ? config.model : '',
     });
-  }, [sessions, messagesOf, config.model]);
+  }, [sessions, messagesOf, config.model, activeId]);
 
   const handleExportMarkdown = useCallback((id) => {
     const p = payloadOf(id);
