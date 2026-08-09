@@ -2,9 +2,9 @@
 // think 标签拆分错了 → 用户看到裸 <think>；SSE 切行错了 → 掉字。
 
 import { describe, it, expect } from 'vitest';
-import { parseThinkTags, processStreamingContent, finalizeMessage, sanitizeMessagesOnLoad } from './message-streaming';
+import { parseThinkTags, processStreamingContent, finalizeMessage, sanitizeMessagesOnLoad, applyStreamingChunk } from './message-streaming';
 import { splitSseLines, parseStreamMessageUpdates } from './stream-utils';
-import { createLoadingAssistantMessage, MESSAGE_STATUS } from '../types';
+import { createLoadingAssistantMessage, getCurrentVersion, MESSAGE_STATUS } from '../types';
 
 describe('parseThinkTags', () => {
   it('无 think 标签时原样返回', () => {
@@ -148,5 +148,74 @@ describe('parseStreamMessageUpdates', () => {
   it('空 delta 不产生更新', () => {
     expect(parseStreamMessageUpdates({ choices: [{ delta: {} }] })).toEqual([]);
     expect(parseStreamMessageUpdates(null)).toEqual([]);
+  });
+});
+
+// ── review 发现的两个真 bug 的回归测试（2026-08）──────────────────────
+
+describe('去重逻辑不吞掉重复 token（P0 回归）', () => {
+  const feed = (deltas) => {
+    let m = createLoadingAssistantMessage();
+    for (const d of deltas) m = applyStreamingChunk(m, 'content', d);
+    return m;
+  };
+
+  // 旧实现只判断 chunk.startsWith(已累积内容)，于是增量模式下的重复
+  // token 被当成「全量重发」整个吞掉。Markdown 列表 `1. `、加粗 `**`、
+  // 连续空行都会踩到 —— 静默掉字。
+  it.each([
+    [['哈', '哈', '哈'], '哈哈哈'],
+    [['1', '1'], '11'],
+    [['\n', '\n'], '\n\n'],
+    [['**', '**'], '****'],
+    [['A', 'A'], 'AA'],
+    [['- ', '- '], '- - '],
+  ])('%j → %j', (deltas, expected) => {
+    expect(feed(deltas).content).toBe(expected);
+  });
+
+  it('真正的累积模式仍然正确去重', () => {
+    // 少数网关每次发全量：你 → 你好 → 你好啊
+    expect(feed(['你', '你好', '你好啊']).content).toBe('你好啊');
+  });
+
+  it('reasoning 轨道同样不掉字', () => {
+    let m = createLoadingAssistantMessage();
+    for (const d of ['嗯', '嗯']) m = applyStreamingChunk(m, 'reasoning', d);
+    expect(m.reasoning.content).toBe('嗯嗯');
+  });
+});
+
+describe('流式期间不把 <think> 裸吐给用户（P1 回归）', () => {
+  const feed = (deltas) => {
+    let m = createLoadingAssistantMessage();
+    for (const d of deltas) m = applyStreamingChunk(m, 'content', d);
+    return m;
+  };
+
+  it('未闭合时 content 为空，原始内容留在 versions 供累积', () => {
+    const m = feed(['<think>', '推理中']);
+    // 渲染层读 content —— 不能看到裸标签
+    expect(m.content).toBe('');
+    expect(m.content).not.toContain('<think>');
+    // 累积基于 versions —— 必须保留原始
+    expect(getCurrentVersion(m).content).toBe('<think>推理中');
+    expect(m.reasoning.content).toBe('推理中');
+  });
+
+  it('闭合后 content 只有正文', () => {
+    const m = feed(['<think>', '推理', '</think>', '答案']);
+    expect(m.content).toBe('答案');
+    expect(getCurrentVersion(m).content).toBe('<think>推理</think>答案');
+  });
+
+  it('逐字流入也不漏标签', () => {
+    const m = feed(['<th', 'ink>', '想', '法', '</th', 'ink>', '答', '案']);
+    expect(m.content).toBe('答案');
+    expect(m.reasoning.content).toBe('想法');
+  });
+
+  it('无 think 的普通内容不受影响', () => {
+    expect(feed(['你', '好', '世界']).content).toBe('你好世界');
   });
 });

@@ -84,55 +84,9 @@ export function updateCurrentVersionContent(message, content) {
   return { ...message, versions: next, content };
 }
 
-export function hasMessageContent(message) {
-  const c = getCurrentVersion(message).content?.trim();
-  return Boolean(c) || Boolean(message?.reasoning?.content?.trim());
-}
-
-// 重发 = 切掉该条之后所有消息 + 追加 assistant 占位
-export function createRegeneratedMessages(messages, targetKey) {
-  const idx = messages.findIndex((m) => m.key === targetKey);
-  if (idx === -1) return [...messages, createLoadingAssistantMessage()];
-  const base = messages.slice(0, idx + 1);
-  return [...base, createLoadingAssistantMessage()];
-}
-
-// 编辑消息。shouldSubmit=true 表示"保存并重发"（切片追加占位）
-export function applyMessageEdit(messages, targetKey, newContent, shouldSubmit) {
-  const idx = messages.findIndex((m) => m.key === targetKey);
-  if (idx === -1) return messages;
-
-  const next = [...messages];
-  const msg = next[idx];
-  if (msg.from === MESSAGE_ROLES.ASSISTANT) {
-    // 助手消息编辑：只改当前版本内容，保留其余状态
-    next[idx] = updateCurrentVersionContent(msg, newContent);
-    return next;
-  }
-
-  // 用户消息编辑：版本记录 + 重发
-  next[idx] = updateCurrentVersionContent(msg, newContent);
-  if (shouldSubmit) {
-    next.splice(idx + 1);
-    next.push(createLoadingAssistantMessage());
-  }
-  return next;
-}
-
-// 停止生成：把流到一半的助手消息收敛成 complete/error
-export function convergeOnStop(messages, targetKey) {
-  const idx = messages.findIndex((m) => m.key === targetKey);
-  if (idx === -1) return messages;
-  const next = [...messages];
-  const msg = next[idx];
-  const hasContent = hasMessageContent(msg);
-  next[idx] = {
-    ...msg,
-    status: hasContent ? MESSAGE_STATUS.COMPLETE : MESSAGE_STATUS.ERROR,
-    completedAt: Date.now(),
-    durationMs: Date.now() - (msg.startedAt || Date.now()),
-    isReasoningStreaming: false,
-    ...(hasContent ? {} : { errorCode: ERROR_MESSAGES.INTERRUPTED }),
-  };
-  return next;
-}
+// 注：以下四个函数已删除（2026-08 review）——
+//   hasMessageContent / createRegeneratedMessages / applyMessageEdit / convergeOnStop
+// 它们没有任何调用方，而 useChatHandler 里有各自的内联实现。
+// 更糟的是 createRegeneratedMessages 用 slice(0, idx+1) 而 handler 用
+// slice(0, idx)，语义相反且并存，容易让人改错地方。
+// 重发/编辑/停止收敛的唯一真源是 hooks/useChatHandler.js。

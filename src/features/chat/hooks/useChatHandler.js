@@ -13,7 +13,10 @@ import {
   MESSAGE_ROLES,
   MESSAGE_STATUS,
 } from '../types';
-import { applyStreamingChunk, completeAssistantMessage } from '../lib/message-streaming';
+import {
+  applyStreamingChunk, completeAssistantMessage, applyChatCompletionChoice,
+} from '../lib/message-streaming';
+import { parseStreamErrorDetails } from '../lib/stream-utils';
 
 // 把内部消息模型转成 OpenAI messages 数组，保持时序
 function toApiMessages(messages, systemPrompt) {
@@ -97,6 +100,12 @@ export function useChatHandler({ config, apiBridge, messages, setMessages, onUsa
       return;
     }
 
+    // 若上一条还在流（并发起流的兜底：start() 内部会 stop 掉旧流的回调，
+    // 但旧消息不会被收尾，会永久停在 streaming 状态转圈）。
+    // 这里先把它收敛掉，再接管 activeKey。
+    if (activeKeyRef.current && activeKeyRef.current !== assistantKey) {
+      convergeActive('INTERRUPTED');
+    }
     activeKeyRef.current = assistantKey;
 
     const payload = {
@@ -116,6 +125,76 @@ export function useChatHandler({ config, apiBridge, messages, setMessages, onUsa
       // 从 key 加载 apiKey.Group）。发过去只会被忽略，还会误导读代码的人
       // 以为前端能切分组。要换分组得换 key。
     };
+
+    // 非流式分支：设置面板可以关掉「流式输出」。
+    // useStreamRequest 只会解析 SSE，拿普通 JSON 响应去跑 splitSseLines 会
+    // 得到空事件 → 空回复。所以这条路径必须单独走 fetch。
+    if (config.stream === false) {
+      try {
+        const res = await fetch(bridge.chatUrl, {
+          method: 'POST',
+          headers: bridge.getHeaders(),
+          credentials: 'include',
+          body: JSON.stringify(payload),
+        });
+        const text = await res.text();
+        if (!res.ok) {
+          const err = parseStreamErrorDetails(text, res.status, res.statusText);
+          setMessages((prev) => {
+            const idx = prev.findIndex((m) => m.key === assistantKey);
+            if (idx === -1) return prev;
+            const next = [...prev];
+            next[idx] = {
+              ...next[idx],
+              status: MESSAGE_STATUS.ERROR,
+              errorCode: err.code,
+              errorMessage: err.message,
+              completedAt: Date.now(),
+            };
+            return next;
+          });
+          activeKeyRef.current = null;
+          return;
+        }
+        const data = JSON.parse(text);
+        const choice = data?.choices?.[0];
+        setMessages((prev) => {
+          const idx = prev.findIndex((m) => m.key === assistantKey);
+          if (idx === -1) return prev;
+          const next = [...prev];
+          next[idx] = {
+            ...applyChatCompletionChoice(next[idx], choice),
+            status: MESSAGE_STATUS.COMPLETE,
+          };
+          return next;
+        });
+        const u = data?.usage;
+        if (u) {
+          onUsage?.({
+            inputTokens: Number(u.prompt_tokens ?? u.input_tokens ?? 0) || 0,
+            outputTokens: Number(u.completion_tokens ?? u.output_tokens ?? 0) || 0,
+            cost: typeof u.cost === 'number' ? u.cost : null,
+            model: data?.model || config.model,
+          });
+        }
+      } catch (e) {
+        setMessages((prev) => {
+          const idx = prev.findIndex((m) => m.key === assistantKey);
+          if (idx === -1) return prev;
+          const next = [...prev];
+          next[idx] = {
+            ...next[idx],
+            status: MESSAGE_STATUS.ERROR,
+            errorMessage: e?.message || '网络错误',
+            completedAt: Date.now(),
+          };
+          return next;
+        });
+      } finally {
+        activeKeyRef.current = null;
+      }
+      return;
+    }
 
     start({
       url: bridge.chatUrl,
@@ -179,7 +258,7 @@ export function useChatHandler({ config, apiBridge, messages, setMessages, onUsa
         activeKeyRef.current = null;
       },
     });
-  }, [apiBridge, config, setMessages, start, onUsage]);
+  }, [apiBridge, config, setMessages, start, onUsage, convergeActive]);
 
   const send = useCallback(async ({ text, images }) => {
     const trimmedText = text?.trim();

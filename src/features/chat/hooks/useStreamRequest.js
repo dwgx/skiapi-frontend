@@ -109,6 +109,10 @@ export function useStreamRequest() {
       const decoder = new TextDecoder();
       let buffer = '';
       let lastRaw = null;
+      // usage 单独记：不能依赖「最后一条 chunk」——
+      // 若网关在带 usage 的 chunk 之后又发了空 delta，lastRaw 会被覆盖，
+      // 用量静默漏计。任何 chunk 带 usage 就记下来。
+      let lastUsage = null;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -124,6 +128,7 @@ export function useStreamRequest() {
           try {
             const parsed = JSON.parse(data);
             lastRaw = parsed;
+            if (parsed?.usage) lastUsage = parsed.usage;
             const updates = parseStreamMessageUpdates(parsed);
             if (updates.length) pendingRef.current.push(...updates);
           } catch {
@@ -147,6 +152,7 @@ export function useStreamRequest() {
           try {
             const parsed = JSON.parse(data);
             lastRaw = parsed;
+            if (parsed?.usage) lastUsage = parsed.usage;
             const updates = parseStreamMessageUpdates(parsed);
             if (updates.length) pendingRef.current.push(...updates);
           } catch { /* 忽略 */ }
@@ -155,7 +161,12 @@ export function useStreamRequest() {
 
       if (!isCurrent()) return;
       finish();
-      onRawResponse?.(lastRaw);
+      // 把捕获到的 usage 合并进最后一条原始响应，调用方逻辑不用改
+      onRawResponse?.(
+        lastUsage && lastRaw && typeof lastRaw === 'object' && !lastRaw.usage
+          ? { ...lastRaw, usage: lastUsage }
+          : lastRaw
+      );
       onDone();
     } catch (err) {
       if (!isCurrent()) return;

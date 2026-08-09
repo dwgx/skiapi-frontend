@@ -93,7 +93,7 @@ export function processStreamingContent(message, contentChunk) {
     };
   }
 
-  const { reasoning, hasUnclosedTag } = parseThinkTags(fullContent);
+  const { visibleContent, reasoning, hasUnclosedTag } = parseThinkTags(fullContent);
   const finalReasoning = reasoning
     ? {
         startedAt: message.reasoning?.startedAt || Date.now(),
@@ -101,16 +101,38 @@ export function processStreamingContent(message, contentChunk) {
       }
     : message.reasoning;
 
+  // versions 存**原始内容**（含 tag）—— 下一轮 chunk 的累积基于它，
+  // 净化后再累积会导致 tag 被反复重新解析。
+  // content 存**净化后的可见文本** —— 渲染层读它，所以流式期间
+  // 用户不会看到裸的 <think>（早期实现两处写同一个值，标签会漏出来，
+  // 流结束 finalizeMessage 才净化，画面会跳一下）。
+  const withVersion = updateCurrentVersionContent(message, fullContent);
   return {
-    ...updateCurrentVersionContent(message, fullContent),
+    ...withVersion,
+    content: visibleContent,
     reasoning: finalReasoning,
     isReasoningStreaming: hasUnclosedTag,
   };
 }
 
-// 去重追加：SSE 可能重复发同样的前缀，不能重复拼
+/**
+ * 兼容「累积模式」上游：少数网关每次发全量内容而不是增量，
+ * 这时新 chunk 会以已累积内容为前缀，需要裁掉重复部分。
+ *
+ * **必须要求 chunk 严格更长**。早期实现只判断 `chunk.startsWith(current)`，
+ * 于是标准增量模式下的重复 token 被当成"全量重发"整个吞掉：
+ *   哈 → 哈 → 哈   得到「哈」而不是「哈哈哈」
+ *   1 → 1          得到「1」（Markdown 编号列表 `1. ` 开头极常见）
+ *   \n → \n        连续空行被压成一个
+ *   ** → **        加粗标记被吞
+ * 累积模式下 chunk 必然比已累积内容长（它包含旧内容 + 新增），
+ * 等长则一定是增量模式的重复 token，直接追加。
+ */
 function getAppendableChunk(currentContent, chunk) {
-  if (!currentContent || !chunk.startsWith(currentContent)) return chunk;
+  if (!currentContent) return chunk;
+  // 等长或更短 → 不可能是全量重发，按增量原样追加
+  if (chunk.length <= currentContent.length) return chunk;
+  if (!chunk.startsWith(currentContent)) return chunk;
   return chunk.slice(currentContent.length);
 }
 

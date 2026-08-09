@@ -332,9 +332,12 @@ export default function ChatInput({
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      // 流式期间挡住 Enter：发送按钮此时被替换成停止按钮，但键盘路径
+      // 之前没挡，连按 Enter 会起第二个流，第一条消息永久卡在 streaming。
+      if (isStreaming) return;
       onSend();
     }
-  }, [showMenu, menuMatches, menuIndex, pickCommand, completeCommand, onSend]);
+  }, [showMenu, menuMatches, menuIndex, pickCommand, completeCommand, onSend, isStreaming]);
 
   const handlePaste = useCallback((e) => {
     const items = e.clipboardData?.items;
