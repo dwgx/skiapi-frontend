@@ -29,3 +29,6 @@ release/
 scripts/config.py
 __pycache__/
 .claude/
+
+# 聊天页独立构建产物（经 scripts/deploy-chat.sh 部署，不入库）
+dist-chat/

@@ -2,14 +2,19 @@
   "name": "skiapi-frontend",
   "private": true,
   "version": "0.0.0",
+  "license": "AGPL-3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "check:ai-security": "node scripts/check-ai-assistant-security.mjs",
     "smoke:skiapi": "node scripts/smoke-skiapi.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:chat": "vite build --config vite.chat.config.js",
+    "dev:chat": "vite --config vite.chat.config.js"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -51,6 +56,7 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
-    "vite": "^8.0.10"
+    "vite": "^8.0.10",
+    "vitest": "^2.1.9"
   }
 }

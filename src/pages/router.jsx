@@ -42,6 +42,7 @@ const ModelDeployment = lr(() => import('../pages/ModelDeployment'));
 const Playground = lr(() => import('../pages/Playground'));
 const ChatPage = lr(() => import('../pages/Chat'));
 const Chat2Link = lr(() => import('../pages/Chat2Link'));
+const ChatApp = lr(() => import('../features/chat/ChatApp'));
 const Pricing = lr(() => import('../pages/Pricing'));
 const About = lr(() => import('../pages/About'));
 const Setup = lr(() => import('../pages/Setup'));
@@ -88,6 +89,7 @@ export const router = createBrowserRouter([
       { path: 'deployment', element: <AdminRoute><S><ModelDeployment /></S></AdminRoute> },
       { path: 'playground', element: <S><Playground /></S> },
       { path: 'chat/:id?', element: <S><ChatPage /></S> },
+      { path: 'newchat', element: <S><ChatApp /></S> },
     ],
   },
   { path: '/chat2link', element: <PrivateRoute><S><Chat2Link /></S></PrivateRoute> },

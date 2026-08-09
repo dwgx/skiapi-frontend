@@ -16,6 +16,8 @@ import remarkGfm from 'remark-gfm';
 import { API } from '../api';
 import { showError, showSuccess, extractList, copy } from '../utils';
 import { isSafeImageUrl, isSafeUrl, safeJsonParse } from '../utils/security';
+import ReasoningBlock from '../features/chat/components/ReasoningBlock';
+import { parseThinkTags, sanitizeMessagesOnLoad } from '../features/chat/lib/message-streaming';
 import PageHeader from '../components/common/PageHeader';
 import { useTranslation } from 'react-i18next';
 import i18n from '../i18n';
@@ -282,15 +284,26 @@ function MessageBubble({ msg, index, onCopy, onDelete, onEdit, loading, isLast }
               <IconButton size="small" onClick={() => setEditing(false)}><Close sx={{ fontSize: 14 }} /></IconButton>
             </Stack>
           </Stack>
-        ) : isStreaming && !textContent ? (
+        ) : isStreaming && !textContent && !msg.reasoning ? (
           <Box className="sk-dots" sx={{ display: 'inline-flex', alignItems: 'center', height: 20, color: 'text.secondary' }}>
             <span /><span /><span />
           </Box>
         ) : (
           <>
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MdComponents}>
-              {textContent || ' '}
-            </ReactMarkdown>
+            {/* 思维链：推理模型的 reasoning_content / <think> 段。
+                之前这两者都被丢掉，reasoning_content 不显示、<think> 裸吐给用户。 */}
+            {(msg.reasoning || msg.isReasoningStreaming) && (
+              <ReasoningBlock
+                reasoning={msg.reasoning}
+                isStreaming={Boolean(msg.isReasoningStreaming)}
+                durationMs={msg.reasoning?.durationMs}
+              />
+            )}
+            {textContent && (
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MdComponents}>
+                {textContent}
+              </ReactMarkdown>
+            )}
           </>
         )}
       </Box>
@@ -368,7 +381,14 @@ export default function Playground() {
     try { return { ...defaultConfig, ...(safeJsonParse(localStorage.getItem('playground_config'), {}) || {}) }; }
     catch { return defaultConfig; }
   });
-  const [messages, setMessages] = useState(() => safeJsonParse(localStorage.getItem('playground_messages'), []));
+  // 加载时收敛残留：崩溃/刷新留下的半截流式消息，之前会永远显示"正在生成"
+  const [messages, setMessages] = useState(() => {
+    const raw = safeJsonParse(localStorage.getItem('playground_messages'), []) || [];
+    if (!Array.isArray(raw)) return [];
+    return raw.map(m =>
+      m?.isReasoningStreaming ? { ...m, isReasoningStreaming: false } : m
+    );
+  });
   const [input, setInput] = useState('');
   const [imageUrls, setImageUrls] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -413,7 +433,17 @@ export default function Playground() {
   }, []);
 
   useEffect(() => { localStorage.setItem('playground_config', JSON.stringify(config)); }, [config]);
-  useEffect(() => { localStorage.setItem('playground_messages', JSON.stringify(messages)); }, [messages]);
+  // 防御性持久化：截断超长文本 + 保存前收敛卡住的流式消息（避免刷新后"永远转圈"）
+  useEffect(() => {
+    try {
+      const cleaned = sanitizeMessagesOnLoad(messages).map(m => {
+        const c = typeof m.content === 'string' && m.content.length > 200000
+          ? m.content.slice(0, 200000) : m.content;
+        return { ...m, content: c, contentRaw: undefined, reasoningDirect: undefined };
+      });
+      localStorage.setItem('playground_messages', JSON.stringify(cleaned));
+    } catch { /* 存储满/超限，忽略（保留旧数据） */ }
+  }, [messages]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   // Paste image from clipboard (always enabled — auto-activates image mode)
@@ -498,7 +528,8 @@ export default function Playground() {
 
     try {
       if (config.stream) {
-        setMessages([...newMessages, { role: 'assistant', content: '' }]);
+        // 助手占位：带 reasoning 字段（流式中拆分 <think>）
+        setMessages([...newMessages, { role: 'assistant', content: '', reasoning: null, isReasoningStreaming: false }]);
         const ctrl = new AbortController(); abortRef.current = ctrl;
         const headers = { 'Content-Type': 'application/json' };
         if (apiKey) headers['Authorization'] = 'Bearer ' + apiKey;
@@ -518,28 +549,96 @@ export default function Playground() {
         }
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        let content = '', fullResp = {};
+        let buffer = '';               // SSE 残行缓冲（老代码 split('\n') 丢残行会掉字）
+        let fullResp = {};
+
+        // 50ms 批量 flush：老代码每收一个 SSE chunk 就 setMessages 一次，
+        // 长回复会触发上千次重渲染。改为先攒进 pending，定时合并写入。
+        let pendingContent = '';
+        let pendingReasoning = '';
+        let dirty = false;
+        const applyPending = () => {
+          if (!dirty) return;
+          const addContent = pendingContent;
+          const addReasoning = pendingReasoning;
+          pendingContent = '';
+          pendingReasoning = '';
+          dirty = false;
+          setMessages(prev => {
+            const m = [...prev];
+            const last = m[m.length - 1];
+            if (!last || last.role !== 'assistant') return prev;
+            const nextContentRaw = (last.contentRaw ?? last.content) + addContent;
+            const nextReasoningDirect = (last.reasoningDirect || '') + addReasoning;
+            // <think> 实时拆分：推理段进 reasoning，正文净化
+            let visible = nextContentRaw;
+            let think = '';
+            let unclosed = false;
+            if (nextContentRaw.includes('<think>')) {
+              const p = parseThinkTags(nextContentRaw);
+              visible = p.visibleContent;
+              think = p.reasoning;
+              unclosed = p.hasUnclosedTag;
+            }
+            const mergedReasoning = nextReasoningDirect || think;
+            m[m.length - 1] = {
+              ...last,
+              contentRaw: nextContentRaw,          // 保留原始（含 tag）用于继续解析
+              reasoningDirect: nextReasoningDirect, // 来自 reasoning_content 字段
+              content: visible,
+              reasoning: mergedReasoning ? { content: mergedReasoning } : null,
+              isReasoningStreaming: unclosed || (Boolean(addReasoning) && !addContent),
+            };
+            return m;
+          });
+        };
+        const flushTimer = setInterval(applyPending, 50);
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          for (const line of decoder.decode(value).split('\n').filter(l => l.startsWith('data: '))) {
-            const data = line.slice(6);
-            if (data === '[DONE]') break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop(); // 残行留到下一轮
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data: ')) continue;
+            const data = trimmed.slice(6).trim();
+            if (data === '[DONE]') continue;
             try {
               const parsed = JSON.parse(data);
               fullResp = parsed;
-              // Support chat completions + responses API (codex) delta formats
-              const delta = parsed.choices?.[0]?.delta?.content  // chat completions
-                || parsed.delta  // responses API: response.output_text.delta event has {delta: "text"}
+              const delta = parsed.choices?.[0]?.delta;
+              const reasoningDelta = delta?.reasoning_content || delta?.reasoning
+                || parsed.reasoning_content
+                || (parsed.type === 'response.reasoning_summary_text.delta' ? parsed.delta : '');
+              const contentDelta = delta?.content
+                || parsed.delta
                 || (parsed.type === 'response.output_text.delta' ? parsed.delta : '')
                 || '';
-              if (delta) {
-                content += delta;
-                setMessages(prev => { const m = [...prev]; m[m.length - 1] = { role: 'assistant', content }; return m; });
+              if (reasoningDelta || contentDelta) {
+                pendingReasoning += reasoningDelta || '';
+                pendingContent += contentDelta || '';
+                dirty = true;
+                // 推理模型可能长时间只吐 reasoning 而不出正文，仍需每 50ms 渲染；
+                // 若间隔内既有 content 又有 reasoning，统一由 applyPending 合并。
               }
             } catch {}
           }
         }
+        clearInterval(flushTimer);
+        applyPending(); // 收尾 flush 残余 buffer
+        // 清理流式临时字段：contentRaw / reasoningDirect 只用于流式解析，最后不留痕
+        setMessages(prev => {
+          const m = [...prev];
+          const last = m[m.length - 1];
+          if (!last || last.role !== 'assistant') return prev;
+          // 清掉流式临时字段 contentRaw / reasoningDirect，不留痕
+          const clean = { ...last, isReasoningStreaming: false };
+          delete clean.contentRaw;
+          delete clean.reasoningDirect;
+          m[m.length - 1] = clean;
+          return m;
+        });
         setDebugData(d => ({ ...d, response: fullResp }));
       } else {
         const nHeaders = { 'Content-Type': 'application/json' };
@@ -561,7 +660,12 @@ export default function Playground() {
           || data.output_text
           || data.output?.flatMap?.(o => o.content?.filter(c => c.type === 'output_text')?.map(c => c.text) || [])?.join('\n')
           || '';
-        setMessages([...newMessages, { role: 'assistant', content }]);
+        const reasoning = data.choices?.[0]?.message?.reasoning_content
+          || data.choices?.[0]?.message?.reasoning
+          || '';
+        // 非流式响应也可能带 <think>
+        const parsed = parseThinkTags(content);
+        setMessages([...newMessages, { role: 'assistant', content: parsed.visibleContent || content, reasoning: parsed.reasoning || reasoning || null }]);
       }
     } catch (err) {
       if (err.name !== 'AbortError') showError(err);

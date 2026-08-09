@@ -37,10 +37,14 @@ export function isSafeImageUrl(url) {
   if (trimmed.startsWith('/') && !trimmed.startsWith('//')) return true;
   if (trimmed.startsWith('//')) return false;
   if (trimmed.startsWith('blob:')) return true;
-  if (/^data:image\/(png|jpe?g|gif|webp|svg\+xml|bmp);/i.test(trimmed)) {
-    // Reject data:image/svg+xml if it could contain scripts — safer to block SVG data URIs
-    if (/^data:image\/svg\+xml/i.test(trimmed)) return false;
+  if (/^data:image\/(png|jpe?g|gif|webp|bmp);/i.test(trimmed)) {
     return true;
+  }
+  // 刻意拒绝所有 data:image/svg+xml：SVG 是 HTML 的宿主，`<img src>` 在多数
+  // 浏览器不执行其中的脚本，但 SVG 可携带 <foreignObject> 等复杂内容，
+  // 作为最典型的 XSS 载体一刀切最安全。外层正则已排除 svg，这里单独拦。
+  if (/^data:image\/svg\+xml/i.test(trimmed)) {
+    return false;
   }
   try {
     const parsed = new URL(trimmed, window.location.origin);
