@@ -143,6 +143,15 @@ export function buildShareUrl(payload, origin = window.location.origin) {
 export function parseSharedFromHash(hash = window.location.hash) {
   const m = /^#s=(.+)$/.exec(hash || '');
   if (!m) return null;
+
+  // 先按**编码长度**拒绝，再解码解析。
+  //
+  // 顺序很重要：如果先解码 + JSON.parse 再截断，攻击者只要发一个超大 fragment
+  // （URL fragment 本身没有长度限制），受害者浏览器会先吃满内存做 base64 解码
+  // 和 JSON 解析，然后才丢弃 —— 这是可行的 DoS。
+  // 生成端 buildShareUrl 的上限是 SHARE_MAX_CHARS，这里放宽一点余量后硬拒。
+  if (m[1].length > SHARE_MAX_CHARS * 1.5) return null;
+
   let obj;
   try {
     obj = JSON.parse(base64UrlToUtf8(m[1]));

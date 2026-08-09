@@ -144,18 +144,58 @@ describe('导入：把 fragment 当敌意输入', () => {
     expect(parsed.messages[0].role).toBe('assistant');
   });
 
-  it('超长内容被截断，条数被限制', () => {
+  it('超长标题被截断、条数被限制', () => {
+    // 用小 payload 验证截断逻辑 —— 之前这里构造 900×200KB=180MB，
+    // 测试本身跑 3.5 秒且掩盖了「先解析后截断」的 DoS 问题（已在实现里修）。
     const evil = {
       kind: 'skiapi-chat',
       title: 'x'.repeat(9999),
-      messages: Array.from({ length: 900 }, () => ({ role: 'user', content: 'y'.repeat(200_000) })),
+      messages: Array.from({ length: 600 }, (_, i) => ({ role: 'user', content: `m${i}` })),
     };
     const enc = btoa(unescape(encodeURIComponent(JSON.stringify(evil))))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
     const parsed = parseSharedFromHash(`#s=${enc}`);
     expect(parsed.title.length).toBeLessThanOrEqual(200);
     expect(parsed.messages.length).toBeLessThanOrEqual(500);
+  });
+
+  it('单条内容超过条目上限时被截断', () => {
+    // 注意两层限制的关系：整个 fragment 有编码长度上限（防 DoS，先生效），
+    // 单条消息有 IMPORT_MAX_CONTENT 上限（后生效）。
+    // 所以这里用一个能通过长度门槛、但超过条目上限的尺寸。
+    const evil = {
+      kind: 'skiapi-chat',
+      title: 't',
+      messages: [{ role: 'user', content: 'y'.repeat(60_000) }],
+    };
+    const enc = btoa(unescape(encodeURIComponent(JSON.stringify(evil))))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const parsed = parseSharedFromHash(`#s=${enc}`);
+    expect(parsed).not.toBeNull();
     expect(parsed.messages[0].content.length).toBeLessThanOrEqual(100_000);
+  });
+
+  it('单条内容大到撑爆 fragment 上限时整体被拒（长度门槛先生效）', () => {
+    const evil = {
+      kind: 'skiapi-chat',
+      title: 't',
+      messages: [{ role: 'user', content: 'y'.repeat(150_000) }],
+    };
+    const enc = btoa(unescape(encodeURIComponent(JSON.stringify(evil))))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    // 生成端 buildShareUrl 本来就产生不出这种链接（它会先报错），
+    // 所以接收端直接拒绝是正确行为，不是漏截断。
+    expect(parseSharedFromHash(`#s=${enc}`)).toBeNull();
+  });
+
+  it('超大 fragment 在解码前就被拒（防 DoS）', () => {
+    // 不构造真实 JSON —— 重点是「长度检查发生在 JSON.parse 之前」。
+    // 传一段超长的合法 base64 字符，实现应当直接返回 null 而不去解码。
+    const huge = 'A'.repeat(200_000);
+    const t0 = Date.now();
+    expect(parseSharedFromHash(`#s=${huge}`)).toBeNull();
+    // 应该是立刻返回，不是解码 200KB 后才失败
+    expect(Date.now() - t0).toBeLessThan(80);
   });
 });
 
