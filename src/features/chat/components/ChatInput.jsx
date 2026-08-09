@@ -284,8 +284,13 @@ export default function ChatInput({
       // 模型选择本身就是个菜单，直接弹，不用再打字
       onChange('');
       onRunCommand?.({ type: 'model', query: '' });
+    } else if (cmd.name === 'websearch') {
+      // 回车直接切换开关 —— 不该逼用户再输 on/off。
+      // 想显式指定仍可以打 `/websearch on`（parseSlashCommand 会带上 args）。
+      onChange('');
+      onRunCommand?.({ type: 'websearch-toggle' });
     } else {
-      // btw / websearch 这类要参数的：补全命令名，等用户接着输
+      // btw 这类必须带内容的：补全命令名，等用户接着输
       onChange(`/${cmd.name} `);
     }
     textareaRef.current?.focus();

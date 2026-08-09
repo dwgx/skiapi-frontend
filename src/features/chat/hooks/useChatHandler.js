@@ -120,6 +120,11 @@ export function useChatHandler({ config, apiBridge, messages, setMessages, onUsa
       ...(config.temperatureEnabled && { temperature: config.temperature }),
       ...(config.topPEnabled && { top_p: config.topP }),
       ...(config.maxTokensEnabled && { max_tokens: config.maxTokens }),
+      // 推理强度。sub2api 认 reasoning_effort，合法值
+      // none / minimal / low / medium / high
+      // （service/openai_gateway_request_body.go 的 normalize 分支）。
+      // 分组可能配了 max_reasoning_effort 上限，超了会被网关钳制，不是前端的事。
+      ...(config.reasoningEffort ? { reasoning_effort: config.reasoningEffort } : {}),
       // 刻意不发 group：sub2api 的 /v1 不读请求体的 group 字段，
       // 分组由 API key 自身决定（backend/internal/server/middleware/api_key_auth.go
       // 从 key 加载 apiKey.Group）。发过去只会被忽略，还会误导读代码的人
@@ -293,39 +298,56 @@ export function useChatHandler({ config, apiBridge, messages, setMessages, onUsa
 
   // 重发：切掉目标助手消息及其后，重新请求
   const regenerate = useCallback(async (assistantKey) => {
-    const current = messagesRef.current;
-    const idx = current.findIndex((m) => m.key === assistantKey);
-    if (idx === -1) return;
+    // 和 send 共用同一把锁 —— 之前 regenerate 完全不看锁，
+    // 连点「重新生成」会起多个并发流，而 runStream 的 convergeActive 兜底
+    // 会把上一条标成 INTERRUPTED，用户看到的是「点了重新生成，
+    // 上一条却变成『请求被中断』」。
+    if (sendingRef.current) return;
+    sendingRef.current = true;
 
-    const base = current.slice(0, idx); // 去掉该助手消息及之后
-    const loading = createLoadingAssistantMessage();
-    const nextMessages = [...base, loading];
-    setMessages(nextMessages);
+    try {
+      const current = messagesRef.current;
+      const idx = current.findIndex((m) => m.key === assistantKey);
+      if (idx === -1) return;
 
-    const historyForApi = toApiMessages(base, config.systemPrompt);
-    await runStream(historyForApi, loading.key);
+      const base = current.slice(0, idx); // 去掉该助手消息及之后
+      const loading = createLoadingAssistantMessage();
+      setMessages([...base, loading]);
+
+      const historyForApi = toApiMessages(base, config.systemPrompt);
+      await runStream(historyForApi, loading.key);
+    } finally {
+      sendingRef.current = false;
+    }
   }, [config.systemPrompt, setMessages, runStream]);
 
   // 编辑用户消息后重发
   const editAndResend = useCallback(async (userKey, newContent) => {
-    const current = messagesRef.current;
-    const idx = current.findIndex((m) => m.key === userKey);
-    if (idx === -1) return;
+    if (sendingRef.current) return; // 同上：与 send / regenerate 共用一把锁
+    sendingRef.current = true;
 
-    const edited = {
-      ...current[idx],
-      content: newContent,
-      versions: [
-        ...(current[idx].versions || []),
-        { id: crypto.randomUUID(), content: newContent },
-      ],
-    };
-    const base = [...current.slice(0, idx), edited];
-    const loading = createLoadingAssistantMessage();
-    setMessages([...base, loading]);
+    try {
+      const current = messagesRef.current;
+      const idx = current.findIndex((m) => m.key === userKey);
+      if (idx === -1) return;
 
-    const historyForApi = toApiMessages(base, config.systemPrompt);
-    await runStream(historyForApi, loading.key);
+      const edited = {
+        ...current[idx],
+        content: newContent,
+        versions: [
+          ...(current[idx].versions || []),
+          { id: crypto.randomUUID(), content: newContent },
+        ],
+      };
+      const base = [...current.slice(0, idx), edited];
+      const loading = createLoadingAssistantMessage();
+      setMessages([...base, loading]);
+
+      const historyForApi = toApiMessages(base, config.systemPrompt);
+      await runStream(historyForApi, loading.key);
+    } finally {
+      sendingRef.current = false;
+    }
   }, [config.systemPrompt, setMessages, runStream]);
 
   // BTW 并行侧问：不打断主生成，不写进对话历史。

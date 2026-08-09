@@ -17,6 +17,12 @@ import { Search, Check, History } from '@mui/icons-material';
 import { useTranslation } from 'react-i18next';
 import { loadRecentModels, pushRecentModel } from '../lib/recent-models';
 
+// 对齐用的两个量（MUI spacing 单位，1 = 8px）。
+// GUTTER：面板左右留白，搜索框与列表项文字都对齐到它。
+// HL_INSET：选中高亮块 / 分隔线相对面板边缘的内缩。
+const GUTTER = 2;    // 16px
+const HL_INSET = 1;  // 8px
+
 export default function ModelPicker({ open, models, current, initialQuery = '', onPick, onClose }) {
   const theme = useTheme();
   const { t } = useTranslation();
@@ -116,7 +122,7 @@ export default function ModelPicker({ open, models, current, initialQuery = '', 
       <Box
         sx={{
           display: 'flex', alignItems: 'center', gap: 1,
-          px: 2, py: 1.5,
+          px: GUTTER, py: 1.5,
           borderBottom: '1px solid',
           borderColor: 'divider',
         }}
@@ -135,10 +141,16 @@ export default function ModelPicker({ open, models, current, initialQuery = '', 
         </Typography>
       </Box>
 
-      {/* 列表 */}
-      <List dense sx={{ maxHeight: 420, overflowY: 'auto', py: 0.5 }}>
+      {/* 列表。
+          对齐规则（三条竖线必须重合）：
+            搜索框文字     px: GUTTER
+            列表项文字     mx: HL_INSET + px: (GUTTER - HL_INSET)
+            分隔线         mx: HL_INSET（和高亮块同宽，不再全宽）
+          之前搜索框 px:2、列表项 mx:1+px:1.5、分隔线全宽 —— 三者各缩进
+          不同量，看起来就是「没对齐」。 */}
+      <List dense sx={{ maxHeight: 420, overflowY: 'auto', py: 0.5 }} disablePadding>
         {filtered.length === 0 && (
-          <Box sx={{ px: 2, py: 4, textAlign: 'center' }}>
+          <Box sx={{ px: GUTTER, py: 4, textAlign: 'center' }}>
             <Typography variant="body2" sx={{ opacity: 0.6, fontSize: '0.82rem' }}>
               {models?.length
                 ? t('没有匹配的模型')
@@ -152,7 +164,7 @@ export default function ModelPicker({ open, models, current, initialQuery = '', 
           const showDivider = recentShown > 0 && i === recentShown;
           return (
             <React.Fragment key={m}>
-              {showDivider && <Divider sx={{ my: 0.5 }} />}
+              {showDivider && <Divider sx={{ my: 0.5, mx: HL_INSET }} />}
               <ListItemButton
                 // 选中项的 DOM 引用：键盘导航时要把它滚进视野
                 ref={i === index ? activeItemRef : null}
@@ -160,8 +172,12 @@ export default function ModelPicker({ open, models, current, initialQuery = '', 
                 onClick={() => handlePick(m)}
                 onMouseEnter={() => setIndex(i)}
                 sx={{
-                  py: 0.85, px: 1.5, mx: 1, borderRadius: 1,
-                  // 选中高亮用 border 而非纯背景色，暗色主题下更清楚
+                  // 高亮块内缩 HL_INSET，块内再补 (GUTTER - HL_INSET)，
+                  // 于是文字左边缘 = GUTTER = 搜索框文字左边缘
+                  py: 0.85,
+                  mx: HL_INSET,
+                  px: GUTTER - HL_INSET,
+                  borderRadius: 1,
                   '&.Mui-selected': {
                     bgcolor: alpha(theme.palette.primary.main, 0.14),
                     '&:hover': { bgcolor: alpha(theme.palette.primary.main, 0.2) },
@@ -169,6 +185,8 @@ export default function ModelPicker({ open, models, current, initialQuery = '', 
                 }}
               >
                 <ListItemText
+                  // 清掉 MUI 默认的上下 margin，否则文字与高亮块中心错开
+                  sx={{ my: 0 }}
                   primary={
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, minWidth: 0 }}>
                       <Typography
@@ -205,7 +223,7 @@ export default function ModelPicker({ open, models, current, initialQuery = '', 
       {/* 底部提示 */}
       <Box
         sx={{
-          px: 2, py: 0.85,
+          px: GUTTER, py: 0.85,
           borderTop: '1px solid', borderColor: 'divider',
           opacity: 0.5,
         }}

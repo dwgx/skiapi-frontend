@@ -66,6 +66,10 @@ export function useChatSessions() {
   // 持久化失败的原因（null = 正常）。上层据此提示用户，避免无声丢消息。
   const [saveError, setSaveError] = useState(null);
 
+  // 本标签删除过的会话 id（墓碑）。列表合并时用它排除已删项，
+  // 否则会把刚删的会话从盘上的旧列表里补回来。
+  const deletedIdsRef = useRef(new Set());
+
   // 最新值 ref（effect/beforeunload 回调里读，避免闭包陈旧）。
   // 用 useEffect 同步而非 render 期赋值 —— react-hooks/refs 禁止 render 写 ref。
   const activeIdRef = useRef(activeId);
@@ -75,9 +79,79 @@ export function useChatSessions() {
     messagesRef.current = messages;
   }, [activeId, messages]);
 
-  // 持久化会话列表
+  // 跨标签页同步。
+  //
+  // 没有它的话两个标签会互相覆盖，且完全无声：
+  //   列表：A 新建会话 X（写 [X,...old]）→ B 新建 Y（写 [Y,...old]，
+  //         B 内存里没有 X）→ X 从列表消失，它的消息成孤儿。
+  //   消息：两边开着同一会话 S（10 条）→ A 追加 5 条（存 15）→
+  //         B 做任何保存动作（发消息/卸载 flush）用内存里的 10 条覆盖
+  //         → A 的 5 条丢了，saveMessages 还返回 SAVE_OK。
+  //
+  // storage 事件只在**其他**标签写入时触发（同标签不触发），正好用来做同步。
   useEffect(() => {
-    try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions)); } catch { /* 满，忽略 */ }
+    const onStorage = (e) => {
+      // 会话列表被别的标签改了 → 直接接受远端版本。
+      // 列表是「哪些会话存在」的元数据，合并语义复杂而收益低，
+      // 后写胜出可接受（消息本身不会因此丢，它们在各自的 key 里）。
+      if (e.key === SESSIONS_KEY) {
+        const remote = loadSessions();
+        setSessions(remote);
+        // 当前会话若已被别的标签删掉，切到远端列表的第一个
+        if (!remote.some((s) => s.id === activeIdRef.current)) {
+          const first = remote[0];
+          if (first) {
+            setActiveId(first.id);
+            setMessages(loadMessages(messageKeyFor(first.id)));
+          }
+        }
+        return;
+      }
+
+      // 当前会话的消息被别的标签改了。
+      // 只在本地没有未落盘改动时才接受远端 —— 否则会把本地刚打的字冲掉。
+      // 判据：本地条数不多于远端。本地更多说明本标签有新内容，
+      // 此时保留本地并让防抖保存去覆盖（用户正在这个标签里操作）。
+      if (activeIdRef.current && e.key === messageKeyFor(activeIdRef.current)) {
+        const remote = loadMessages(e.key);
+        if (remote.length >= (messagesRef.current?.length || 0)) {
+          setMessages(remote);
+        }
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  // 持久化会话列表。
+  //
+  // 写之前与盘上版本合并，而不是无条件覆盖 —— 否则两个标签各自新建会话时，
+  // 后写的那个会用自己的（不含对方新会话的）列表把对方抹掉。
+  //
+  // 合并规则：以本地顺序为主，补上「盘里有、本地没有、且本标签没删过」的会话。
+  // **墓碑（deletedIdsRef）是必需的**：deleteSession 先 setSessions(next)，
+  // 此时盘上还是旧列表，若不记删除意图，合并会把刚删的会话当成
+  // 「别的标签新建的」补回来 —— 结果是删不掉。
+  useEffect(() => {
+    try {
+      const localIds = new Set(sessions.map((s) => s.id));
+      let merged = sessions;
+      const raw = localStorage.getItem(SESSIONS_KEY);
+      if (raw) {
+        const remote = JSON.parse(raw);
+        if (Array.isArray(remote)) {
+          const extras = remote.filter(
+            (s) => s && typeof s.id === 'string'
+              && !localIds.has(s.id)
+              && !deletedIdsRef.current.has(s.id)
+          );
+          if (extras.length) merged = [...sessions, ...extras];
+        }
+      }
+      localStorage.setItem(SESSIONS_KEY, JSON.stringify(merged));
+      // 合并出了新东西就同步进 state，让侧栏也能看到别的标签建的会话
+      if (merged !== sessions) setSessions(merged);
+    } catch { /* 满或坏数据，忽略 */ }
   }, [sessions]);
 
   // 上次真正落盘的时刻。用于「最大延迟」兜底，见下方 effect。
@@ -165,6 +239,7 @@ export function useChatSessions() {
   }, [flushNow]);
 
   const deleteSession = useCallback((id) => {
+    deletedIdsRef.current.add(id); // 先立墓碑，再改 state（见持久化 effect 的合并逻辑）
     // 删的不是当前会话时，当前会话仍需保住（删除会触发 setSessions →
     // 防抖 effect 重跑 → 旧定时器被 clearTimeout 丢掉）
     if (id !== activeIdRef.current) flushNow();

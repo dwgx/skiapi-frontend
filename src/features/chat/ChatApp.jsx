@@ -92,6 +92,8 @@ export default function ChatApp() {
     topP: 1, topPEnabled: false,
     maxTokens: 4096, maxTokensEnabled: false,
     webSearch: false,
+    // 推理强度：'' = 不发这个字段（用上游/分组默认）
+    reasoningEffort: '',
   }));
   const [input, setInput] = useState('');
   const [imageUrls, setImageUrls] = useState([]);
@@ -151,12 +153,24 @@ export default function ChatApp() {
   // 本会话累计用量。发消息前显示占位符，收到第一次 usage 后显示实际花费。
   const [sessionUsage, setSessionUsage] = useState({ inputTokens: 0, outputTokens: 0, cost: 0, counted: false });
 
+  // 账户累计花费的基线（进入本会话时的值）。本会话花费 = 当前值 - 基线。
+  //
+  // 为什么要这么绕：`/v1/chat/completions` 是 OpenAI 兼容格式，usage 里
+  // **只有 token 数，没有金额** —— 计费在网关服务端，不回传给客户端。
+  // 所以前端自己算不出美元，之前 `cost + (u.cost ?? 0)` 永远加 0，
+  // 显示的其实只是 token 数却标着 $ —— 这就是「统计消费不对」。
+  // 真值只能从面板的 /api/v1/usage/dashboard/stats 的 total_cost 拿。
+  const costBaselineRef = useRef(null);
+  // bridgeInfo 的 ref —— resetSessionUsage 的依赖数组是空的（它被多个
+  // useCallback 依赖，不想让它随 bridgeInfo 变化而重建），所以用 ref 读最新值。
+  const bridgeInfoRef = useRef(null);
+
   const handleUsage = useCallback((u) => {
+    // token 数来自流里的 usage，是准的，先记上
     setSessionUsage((prev) => ({
+      ...prev,
       inputTokens: prev.inputTokens + (u.inputTokens || 0),
       outputTokens: prev.outputTokens + (u.outputTokens || 0),
-      // 网关给了真实 cost 就累加真值；没给就先记 0（只展示 token）
-      cost: prev.cost + (typeof u.cost === 'number' ? u.cost : 0),
       counted: true,
     }));
   }, []);
@@ -186,7 +200,14 @@ export default function ChatApp() {
       }));
 
       const u = await bridge.getUsage?.().catch(() => null);
-      if (u) setUsage(u);
+      if (u) {
+        setUsage(u);
+        // 记基线：此刻的账户累计花费。本会话花费 = 之后的值 - 这个基线。
+        // 必须在发第一条消息**之前**记，否则第一条的花费会被算掉。
+        if (costBaselineRef.current === null && typeof u.total_cost === 'number') {
+          costBaselineRef.current = u.total_cost;
+        }
+      }
     } catch (err) {
       setBridgeInfo(null);
       setKeyError(err?.message || '无法连接后端');
@@ -234,11 +255,43 @@ export default function ChatApp() {
     setToast(t('已存为新会话'));
   }, [shared, sharedMessages, handler, newSession, renameSession, setMessages, t]);
 
+  // 同步 bridgeInfo 到 ref（供依赖数组为空的回调读最新值）
+  useEffect(() => { bridgeInfoRef.current = bridgeInfo; }, [bridgeInfo]);
+
   const streamingMessage = messages.find(
     (m) => m.status === MESSAGE_STATUS.LOADING || m.status === MESSAGE_STATUS.STREAMING
   );
   const isStreaming = Boolean(streamingMessage);
   const activeKey = streamingMessage?.key ?? null;
+
+  // 流式结束后重新拉一次账户用量，用「当前 total_cost - 进入会话时的基线」
+  // 算出本会话真实花费。网关的计费有一点延迟，所以稍等一下再拉。
+  const prevStreamingRef = useRef(false);
+  useEffect(() => {
+    const justFinished = prevStreamingRef.current && !isStreaming;
+    prevStreamingRef.current = isStreaming;
+    if (!justFinished || !bridgeInfo?.getUsage) return;
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const u = await bridgeInfo.getUsage().catch(() => null);
+      if (cancelled || !u || typeof u.total_cost !== 'number') return;
+      setUsage(u);
+      // 基线应当在 refreshBridge 里就记好了。这里兜一下：万一没记上
+      // （首次拉用量失败），就用当前值当基线，本次显示 0 而不是显示
+      // 整个账户的累计花费 —— 那会非常误导。
+      if (costBaselineRef.current === null) {
+        costBaselineRef.current = u.total_cost;
+      }
+      const delta = u.total_cost - costBaselineRef.current;
+      setSessionUsage((prev) => ({
+        ...prev,
+        cost: delta > 0 ? delta : 0,
+        counted: true,
+      }));
+    }, 1200);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [isStreaming, bridgeInfo]);
 
   // 自动滚到底：只在用户本来就贴着底部时才滚。
   // 之前无条件 smooth 滚动，流式每 50ms 一次，用户往上翻历史会被反复拽回底部。
@@ -267,6 +320,18 @@ export default function ChatApp() {
   // 切走时把本会话用量计数归零 —— 它统计的是「当前会话」，不是账户累计
   const resetSessionUsage = useCallback(() => {
     setSessionUsage({ inputTokens: 0, outputTokens: 0, cost: 0, counted: false });
+    // 基线也要重置 —— 否则切到新会话后，花费会从上一个会话的基线算起，
+    // 把上一个会话的消费算进新会话。
+    //
+    // 置 null 之后**立刻重新取一次基线**：不能等下一次流式结束再取，
+    // 那样第一条消息的花费会被当成基线的一部分而漏算。
+    costBaselineRef.current = null;
+    bridgeInfoRef.current?.getUsage?.().then((u) => {
+      if (u && typeof u.total_cost === 'number' && costBaselineRef.current === null) {
+        costBaselineRef.current = u.total_cost;
+        setUsage(u);
+      }
+    }).catch(() => { /* 拿不到就等流式结束时的兜底 */ });
   }, []);
 
   const selectSessionSafe = useCallback((id) => {
@@ -488,18 +553,23 @@ export default function ChatApp() {
             title={
               sessionUsage.counted
                 ? `${t('本会话')}：${fmtNum(sessionUsage.inputTokens)} in / ${fmtNum(sessionUsage.outputTokens)} out`
+                  + (sessionUsage.cost > 0
+                      ? `\n${t('花费')} ${fmtCost(sessionUsage.cost)}（${t('来自账户账单，稍有延迟')}）`
+                      : `\n${t('花费统计中…（网关计费有几秒延迟）')}`)
                 : t('本会话消耗 —— 发送第一条消息后开始统计')
             }
           >
             <Chip
               size="small"
               variant="outlined"
+              // 有真实金额就显示金额，否则显示 token 数并**明确带上 tok 单位**
+              // —— 之前拿 token 数配 $ 前缀是在撒谎（/v1 的 usage 不含金额）。
               label={
                 sessionUsage.counted
                   ? (sessionUsage.cost > 0
                       ? fmtCost(sessionUsage.cost)
                       : `${fmtNum(sessionUsage.inputTokens + sessionUsage.outputTokens)} tok`)
-                  : '$ —'
+                  : '— tok'
               }
               sx={{
                 fontSize: '0.7rem', height: 22,

@@ -230,6 +230,28 @@ export default function SettingsPanel({ config, setConfig, models, groups }) {
           />
         </Stack>
 
+        {/* 推理强度。留空 = 不发这个字段，跟随上游/分组默认。
+            合法值来自 sub2api 的 normalize 分支：none/minimal/low/medium/high */}
+        <FormControl size="small" fullWidth>
+          <InputLabel sx={{ fontSize: '0.8rem' }}>{t('推理强度')}</InputLabel>
+          <Select
+            label={t('推理强度')}
+            value={config.reasoningEffort || ''}
+            onChange={(e) => set({ reasoningEffort: e.target.value })}
+            sx={{ fontSize: '0.82rem' }}
+          >
+            <MenuItem value="" sx={{ fontSize: '0.82rem' }}>{t('默认（不指定）')}</MenuItem>
+            <MenuItem value="none" sx={{ fontSize: '0.82rem' }}>none — {t('不推理')}</MenuItem>
+            <MenuItem value="minimal" sx={{ fontSize: '0.82rem' }}>minimal — {t('极少')}</MenuItem>
+            <MenuItem value="low" sx={{ fontSize: '0.82rem' }}>low — {t('低')}</MenuItem>
+            <MenuItem value="medium" sx={{ fontSize: '0.82rem' }}>medium — {t('中')}</MenuItem>
+            <MenuItem value="high" sx={{ fontSize: '0.82rem' }}>high — {t('高（更慢更贵）')}</MenuItem>
+          </Select>
+          <Typography variant="caption" sx={{ mt: 0.5, display: 'block', opacity: 0.55, fontSize: '0.65rem' }}>
+            {t('只对支持推理的模型有效；分组可能设了上限，超出会被网关钳制')}
+          </Typography>
+        </FormControl>
+
         {/* 系统提示词 */}
         <TextField
           label={t('系统提示词')}
