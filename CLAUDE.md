@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Tool priorities
+
+Use the tools configured for this machine instead of their lower-level substitutes (these are the most-violated rules globally):
+
+- **CodeGraph**: this repo has no `.codegraph/` index yet — run `codegraph init` once when you need to repeatedly search this codebase. Until then use `rg`/`fd`.
+- **Search with `rg`, not `grep`**; **find files with `fd`, not `find`**.
+- **Read files with the Read tool**, not `cat`/`head`.
+- **Run `gradle --stop` after building** (global rule — the daemon holds ~1 GB on an 8 GB machine).
+
 ## Project
 
 React + MUI v7 (Material Design 3) rewrite of the NewAPI admin console (https://skiapi.dev/).
