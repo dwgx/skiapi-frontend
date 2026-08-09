@@ -97,10 +97,20 @@ async function sub2apiResolve() {
     err.code = 'KEY_FETCH_FAILED';
     throw err;
   }
+  // 选 key。多数账号只有一个 key，这里的挑选逻辑主要是为了：
+  //   1. 优先 active 的（禁用的 key 请求必然 401）
+  //   2. 跳过没有明文 key 的项（理论上不该有，防御性）
+  //   3. 单 key 时就是它，没有歧义
   const items = keyRes.body.data?.items || [];
-  const active = items.find((k) => k.status === 'active' && k.key) || items.find((k) => k.key);
+  const usable = items.filter((k) => k?.key);
+  const active = usable.find((k) => k.status === 'active') || usable[0];
   if (!active?.key) {
-    const err = new Error('没有可用的 API key，请先在面板创建');
+    // 区分「一个 key 都没有」和「有 key 但全被禁用」—— 用户要做的事不同
+    const err = new Error(
+      items.length
+        ? 'API key 全部被禁用，请在面板启用或新建一个'
+        : '账号下还没有 API key，请先在面板创建一个'
+    );
     err.code = 'NO_KEYS';
     throw err;
   }

@@ -5,19 +5,54 @@
 // 桌面端启动时的节奏：不是整块一起淡入，而是像逐步"醒过来"。
 // 尊重 prefers-reduced-motion —— 关掉动画的用户直接看到最终状态。
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Box, Typography, Chip, alpha, useTheme } from '@mui/material';
+import { Refresh } from '@mui/icons-material';
 import { useTranslation } from 'react-i18next';
 import ClaudeIcon, { CLAUDE_BRAND } from './ClaudeIcon';
 import { useTypewriterPlaceholder } from '../hooks/useTypewriterPlaceholder';
 
 // 建议提示：点一下填进输入框
-const SUGGESTIONS = [
-  '解释这段代码做了什么',
-  '帮我写一个 Python 脚本',
-  '这个报错怎么修',
-  '把这段文字润色一下',
+// 建议提示词池。分组是按真实使用分布来的，不是凭感觉：
+// NBER Working Paper 34255（AI 助手实际用途研究）显示三大类占近 80% ——
+// 实用建议(Practical Guidance) / 信息查询(Seeking Information) / 写作(Writing)，
+// 且非工作用途已超 70%，**编程占比很小**。
+// 早期这里四条全是编程向（解释代码/写脚本/修报错），正好押在占比最小的那类上。
+//
+// 每次进入随机抽 4 条展示，点「换一批」重抽 —— 固定四条看久了就是死的。
+const SUGGESTION_POOL = [
+  // 实用建议
+  '帮我规划一份三天的旅行行程',
+  '冰箱里有鸡蛋、番茄和面条，能做什么',
+  '怎么和同事沟通一个我不同意的决定',
+  '帮我制定一个可执行的健身计划',
+  '房租合同里有哪些条款要特别注意',
+  '怎么在两周内准备一场面试',
+  // 信息查询 / 解释
+  '用大白话解释一下什么是通货膨胀',
+  '这两款手机怎么选，帮我列个对比',
+  '为什么天空是蓝色的',
+  '简单讲讲最近的 AI 进展',
+  // 写作
+  '帮我写一封得体的请假邮件',
+  '把这段话改得更简洁专业',
+  '给这篇文章起几个吸引人的标题',
+  '帮我写一段朋友生日的祝福语',
+  '把这份会议记录整理成要点',
+  // 少量技术（占比小但存在）
+  '这个报错是什么意思，怎么修',
+  '帮我把这段逻辑写成 Python',
 ];
+
+// 随机抽 n 条不重复
+function pickSuggestions(pool, n) {
+  const copy = [...pool];
+  const out = [];
+  while (out.length < n && copy.length) {
+    out.push(copy.splice(Math.floor(Math.random() * copy.length), 1)[0]);
+  }
+  return out;
+}
 
 export default function WelcomeHero({ signedIn, loading, onPickPrompt }) {
   const theme = useTheme();
@@ -32,6 +67,14 @@ export default function WelcomeHero({ signedIn, loading, onPickPrompt }) {
   ], [t]);
 
   const typed = useTypewriterPlaceholder(phrases, true);
+
+  // 展示的 4 条建议。首次随机抽，点「换一批」重抽。
+  const [suggestions, setSuggestions] = useState(() => pickSuggestions(SUGGESTION_POOL, 4));
+  const [shuffleSeq, setShuffleSeq] = useState(0); // 变化时重放入场动画
+  const reshuffle = () => {
+    setSuggestions(pickSuggestions(SUGGESTION_POOL, 4));
+    setShuffleSeq((n) => n + 1);
+  };
 
   const reduce = typeof window !== 'undefined'
     && window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
@@ -106,9 +149,9 @@ export default function WelcomeHero({ signedIn, loading, onPickPrompt }) {
           ...rise(360),
         }}
       >
-        {SUGGESTIONS.map((s, i) => (
+        {suggestions.map((s, i) => (
           <Chip
-            key={s}
+            key={`${shuffleSeq}-${s}`}
             label={t(s)}
             size="small"
             clickable
@@ -135,6 +178,30 @@ export default function WelcomeHero({ signedIn, loading, onPickPrompt }) {
             }}
           />
         ))}
+
+        {/* 换一批：从池子里重抽 4 条 */}
+        <Chip
+          icon={<Refresh sx={{ fontSize: 13 }} />}
+          label={t('换一批')}
+          size="small"
+          clickable
+          onClick={reshuffle}
+          sx={{
+            fontSize: '0.75rem',
+            borderRadius: 1,
+            border: '1px dashed',
+            borderColor: alpha(theme.palette.text.primary, 0.18),
+            bgcolor: 'transparent',
+            color: 'text.secondary',
+            transition: 'color 160ms, border-color 160ms',
+            '& .MuiChip-icon': { ml: 0.5, color: 'inherit' },
+            '&:hover': {
+              color: 'primary.main',
+              borderColor: alpha(theme.palette.primary.main, 0.4),
+              bgcolor: 'transparent',
+            },
+          }}
+        />
       </Box>
 
       {!signedIn && !loading && (

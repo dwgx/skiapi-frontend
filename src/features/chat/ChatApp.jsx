@@ -112,7 +112,16 @@ export default function ChatApp() {
   const [btw, setBtw] = useState({ open: false, question: '', answer: '', loading: false, error: null });
   const [helpOpen, setHelpOpen] = useState(false);
   // 模型选择菜单（/model 命令或点模型 chip 触发）
-  const [modelPicker, setModelPicker] = useState({ open: false, query: '' });
+  // seq 每次打开自增 —— 用来做 ModelPicker 的 key，强制重挂从而重置
+  // 内部状态（选中项回到第一个）。只用 query 做 key 时，同样的 query
+  // 重开不会重挂，index 保留上次的值 → 打开时选中项不在第一个。
+  const [modelPicker, setModelPicker] = useState({ open: false, query: '', seq: 0 });
+  const openModelPicker = useCallback((query = '') => {
+    setModelPicker((p) => ({ open: true, query, seq: p.seq + 1 }));
+  }, []);
+  const closeModelPicker = useCallback(() => {
+    setModelPicker((p) => ({ ...p, open: false }));
+  }, []);
   // 轻提示（导出/分享的结果反馈）
   const [toast, setToast] = useState('');
   // 当前会话对象（顶栏标题用）
@@ -164,6 +173,24 @@ export default function ChatApp() {
   // bridgeInfo 的 ref —— resetSessionUsage 的依赖数组是空的（它被多个
   // useCallback 依赖，不想让它随 bridgeInfo 变化而重建），所以用 ref 读最新值。
   const bridgeInfoRef = useRef(null);
+
+  // 账户余额 / 冻结额度。来自 /api/v1/user/profile（apiBridge 已经拉了并
+  // 放在 bridgeInfo.userInfo 里）。这是「还剩多少」，与历史累计消费是两回事。
+  const accountBalance = typeof bridgeInfo?.userInfo?.balance === 'number'
+    ? bridgeInfo.userInfo.balance
+    : null;
+  const frozenBalance = typeof bridgeInfo?.userInfo?.frozen_balance === 'number'
+    ? bridgeInfo.userInfo.frozen_balance
+    : 0;
+
+  // 当前 key 自身的额度。单 key 账号（多数情况）下这比账户余额更贴近
+  // 「这个 key 还能用多少」。quota=0 表示不限额。
+  const keyQuota = typeof bridgeInfo?.keyInfo?.quota === 'number'
+    ? bridgeInfo.keyInfo.quota
+    : null;
+  const keyQuotaUsed = typeof bridgeInfo?.keyInfo?.quotaUsed === 'number'
+    ? bridgeInfo.keyInfo.quotaUsed
+    : 0;
 
   const handleUsage = useCallback((u) => {
     // token 数来自流里的 usage，是准的，先记上
@@ -406,7 +433,7 @@ export default function ChatApp() {
     switch (result.type) {
       case 'model':
         // 弹出模型选择菜单，带上输入的词做初始过滤
-        setModelPicker({ open: true, query: result.query || '' });
+        openModelPicker(result.query || '');
         break;
       case 'websearch':
         // 已在 slashCommands 里 setConfig
@@ -436,7 +463,7 @@ export default function ChatApp() {
       default:
         break;
     }
-  }, [handler, setConfig, clearActive]);
+  }, [handler, setConfig, clearActive, openModelPicker]);
 
   // 发送前先解析斜杠命令；是命令则执行不当作普通消息
   const handleSend = useCallback(async () => {
@@ -523,7 +550,7 @@ export default function ChatApp() {
               size="small"
               variant="outlined"
               clickable
-              onClick={() => setModelPicker({ open: true, query: '' })}
+              onClick={() => openModelPicker()}
               icon={<ClaudeIcon size={11} color={CLAUDE_BRAND} />}
               label={config.model || t('未选择模型')}
               sx={{ fontSize: '0.72rem', height: 24, maxWidth: 220 }}
@@ -580,14 +607,56 @@ export default function ChatApp() {
             />
           </Tooltip>
 
-          {/* 账户累计（面板聚合），和本会话区分开 */}
-          {usage && (
-            <Tooltip arrow title={t('账户累计（全部 API key）')}>
+          {/* 账户余额。
+              之前这里显示的是 usage.total_cost —— 那是**历史累计消费**
+              （账户开通至今花掉的总额，会一直涨），不是「额度」。
+              用户想看的是「还剩多少」，所以改成 profile 里的 balance。
+              历史消费和请求数放进 tooltip，需要时能看到。 */}
+          {(accountBalance !== null || usage) && (
+            <Tooltip
+              arrow
+              title={
+                <Box sx={{ py: 0.25, whiteSpace: 'pre-line' }}>
+                  {accountBalance !== null && (
+                    <Typography variant="caption" sx={{ display: 'block' }}>
+                      {t('余额')} {fmtCost(accountBalance)}
+                      {frozenBalance > 0 ? `（${t('冻结')} ${fmtCost(frozenBalance)}）` : ''}
+                    </Typography>
+                  )}
+                  {keyQuota !== null && (
+                    <Typography variant="caption" sx={{ display: 'block', opacity: 0.85 }}>
+                      {t('本 key 额度')} {fmtCost(keyQuotaUsed)} / {keyQuota > 0 ? fmtCost(keyQuota) : t('不限')}
+                    </Typography>
+                  )}
+                  {usage && (
+                    <>
+                      <Typography variant="caption" sx={{ display: 'block', opacity: 0.8 }}>
+                        {t('历史消费')} {fmtCost(usage.total_cost)}
+                      </Typography>
+                      <Typography variant="caption" sx={{ display: 'block', opacity: 0.8 }}>
+                        {fmtNum(usage.total_requests)} {t('次请求')} · {fmtNum(usage.total_tokens)} tok
+                      </Typography>
+                    </>
+                  )}
+                </Box>
+              }
+            >
               <Chip
                 size="small"
                 variant="outlined"
-                label={`${t('账户')} ${fmtCost(usage.total_cost)}`}
-                sx={{ fontSize: '0.7rem', height: 22, opacity: 0.7, fontVariantNumeric: 'tabular-nums' }}
+                label={
+                  accountBalance !== null
+                    ? `${t('余额')} ${fmtCost(accountBalance)}`
+                    : `${t('已用')} ${fmtCost(usage.total_cost)}`
+                }
+                sx={{
+                  fontSize: '0.7rem', height: 22, opacity: 0.75,
+                  fontVariantNumeric: 'tabular-nums',
+                  // 余额见底时变红，提前给个信号
+                  ...(accountBalance !== null && accountBalance < 1
+                    ? { color: 'error.main', borderColor: alpha(theme.palette.error.main, 0.4), opacity: 1 }
+                    : {}),
+                }}
               />
             </Tooltip>
           )}
@@ -812,17 +881,17 @@ export default function ChatApp() {
             {/* 模型选择菜单：贴着输入框上方弹出 */}
             <ModelPicker
               // key 变化强制重挂 → 每次打开都以 initialQuery 为初值重置内部状态
-              key={modelPicker.open ? `mp-${modelPicker.query}` : 'mp-closed'}
+              key={`mp-${modelPicker.seq}`}
               open={modelPicker.open}
               models={visibleModels}
               current={config.model}
               initialQuery={modelPicker.query}
               onPick={(m) => {
                 setConfig((c) => ({ ...c, model: m }));
-                setModelPicker({ open: false, query: '' });
+                closeModelPicker();
                 setToast(`${t('已切换到')} ${m}`);
               }}
-              onClose={() => setModelPicker({ open: false, query: '' })}
+              onClose={closeModelPicker}
             />
             <ChatInput
               value={input}
@@ -835,7 +904,7 @@ export default function ChatApp() {
               onRemoveImage={(i) => setImageUrls((p) => p.filter((_, j) => j !== i))}
               onRunCommand={handleCommand}
               config={config}
-              onOpenModelPicker={() => setModelPicker({ open: true, query: '' })}
+              onOpenModelPicker={() => openModelPicker()}
               onOpenSettings={() => setShowSettings(true)}
             />
           </Box>

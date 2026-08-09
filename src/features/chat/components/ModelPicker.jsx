@@ -115,6 +115,11 @@ export default function ModelPicker({ open, models, current, initialQuery = '', 
           borderRadius: 2,
           bgcolor: 'background.paper',
           backgroundImage: 'none',
+          // 纵向 flex：搜索框固定高、列表吃掉剩余空间、底栏贴住底部。
+          // 不这么做的话列表短时底栏会浮在面板中间，看着像「没贴合」。
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden', // 让子元素的圆角被 Paper 裁掉
         },
       }}
     >
@@ -148,7 +153,11 @@ export default function ModelPicker({ open, models, current, initialQuery = '', 
             分隔线         mx: HL_INSET（和高亮块同宽，不再全宽）
           之前搜索框 px:2、列表项 mx:1+px:1.5、分隔线全宽 —— 三者各缩进
           不同量，看起来就是「没对齐」。 */}
-      <List dense sx={{ maxHeight: 420, overflowY: 'auto', py: 0.5 }} disablePadding>
+      {/* py 用固定值而不是配 disablePadding —— 两者一起给会冲突：
+          disablePadding 清掉 MUI 默认 padding，py 又加回来，
+          结果列表底部留一截空白，看起来「没贴合」底栏。
+          这里只用 py，不加 disablePadding。 */}
+      <List dense sx={{ maxHeight: 420, overflowY: 'auto', py: 0.5, flex: 1 }}>
         {filtered.length === 0 && (
           <Box sx={{ px: GUTTER, py: 4, textAlign: 'center' }}>
             <Typography variant="body2" sx={{ opacity: 0.6, fontSize: '0.82rem' }}>
