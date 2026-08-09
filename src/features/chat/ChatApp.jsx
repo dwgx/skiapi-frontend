@@ -24,10 +24,11 @@ import ClaudeIcon, { CLAUDE_BRAND } from './components/ClaudeIcon';
 import { useChatSessions } from './hooks/useChatSessions';
 import { useChatHandler } from './hooks/useChatHandler';
 import { createApiBridge } from './apiBridge';
-import { MESSAGE_STATUS } from './types';
+import { MESSAGE_STATUS, MESSAGE_ROLES } from './types';
 import { parseSlashCommand } from './lib/slashCommands';
 import {
   buildExportPayload, toMarkdown, downloadFile, safeFilename, buildShareUrl,
+  parseSharedFromHash,
 } from './lib/session-export';
 import { loadMessages } from './lib/storage';
 import { messageKeyFor } from './hooks/useChatSessions';
@@ -114,6 +115,31 @@ export default function ChatApp() {
   // 当前会话对象（顶栏标题用）
   const activeSession = sessions.find((s) => s.id === activeId);
 
+  // 分享内容（URL 带 #s= 时）。只在首帧解析一次 —— 内容在 fragment 里，
+  // 不会随导航变化；解析结果当**只读预览**，不写进本地会话列表。
+  const [shared] = useState(() => {
+    try {
+      return parseSharedFromHash();
+    } catch {
+      return null;
+    }
+  });
+  const [sharedDismissed, setSharedDismissed] = useState(false);
+  const viewingShared = Boolean(shared) && !sharedDismissed;
+
+  // 把分享内容转成可渲染的消息（复用 ChatMessage 的管线，含 markdown 白名单）
+  const sharedMessages = useMemo(() => {
+    if (!shared?.messages) return [];
+    return shared.messages.map((m, i) => ({
+      key: `shared-${i}`,
+      from: m.role === 'user' ? MESSAGE_ROLES.USER : MESSAGE_ROLES.ASSISTANT,
+      content: m.content,
+      status: MESSAGE_STATUS.COMPLETE,
+      versions: [{ id: `shared-${i}`, content: m.content }],
+    }));
+  }, [shared]);
+
+
   // 当前可选模型：选了分组就只列该分组的模型（每个分组可用模型不同，
   // 拿别的分组的模型去请求必然失败）。没选分组或该分组没配模型时列全部。
   const visibleModels = useMemo(() => {
@@ -190,6 +216,22 @@ export default function ChatApp() {
     setMessages,
     onUsage: handleUsage,
   });
+
+  // 「存到我的会话」：把只读的分享内容落成一个本地新会话。
+  // 放在 handler 之后 —— 依赖数组里要用 handler.stop()。
+  const importShared = useCallback(() => {
+    if (!shared?.messages?.length) return;
+    handler.stop();
+    const id = newSession();
+    renameSession(id, shared.title || t('导入的分享会话'));
+    setMessages(sharedMessages);
+    setSharedDismissed(true);
+    // 清掉 fragment，避免刷新又回到只读预览
+    try {
+      window.history.replaceState(null, '', window.location.pathname);
+    } catch { /* 忽略 */ }
+    setToast(t('已存为新会话'));
+  }, [shared, sharedMessages, handler, newSession, renameSession, setMessages, t]);
 
   const streamingMessage = messages.find(
     (m) => m.status === MESSAGE_STATUS.LOADING || m.status === MESSAGE_STATUS.STREAMING
@@ -581,7 +623,41 @@ export default function ChatApp() {
           }}
         >
           <Box sx={{ maxWidth: 860, mx: 'auto' }}>
-            {!messages.length ? (
+            {/* 分享内容的只读预览。链接里的内容不写进本地会话，
+                要留下来得点「存为新会话」—— 避免别人的链接污染你的历史。 */}
+            {viewingShared && (
+              <Box
+                sx={{
+                  mb: 2.5, px: 2, py: 1.5, borderRadius: 1.5,
+                  bgcolor: alpha(theme.palette.info.main, 0.07),
+                  border: '1px solid',
+                  borderColor: alpha(theme.palette.info.main, 0.3),
+                  display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap',
+                }}
+              >
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.84rem' }}>
+                    {shared.title}
+                  </Typography>
+                  <Typography variant="caption" sx={{ opacity: 0.65, fontSize: '0.7rem' }}>
+                    {t('这是别人分享的会话（只读）')}
+                    {shared.model ? ` · ${shared.model}` : ''}
+                  </Typography>
+                </Box>
+                <Button size="small" variant="outlined" onClick={importShared}>
+                  {t('存为新会话')}
+                </Button>
+                <Button size="small" onClick={() => setSharedDismissed(true)}>
+                  {t('忽略')}
+                </Button>
+              </Box>
+            )}
+
+            {viewingShared ? (
+              sharedMessages.map((m) => (
+                <ChatMessage key={m.key} message={m} isBusy />
+              ))
+            ) : !messages.length ? (
               <WelcomeHero
                 signedIn={Boolean(bridgeInfo)}
                 loading={bridgeLoading}
