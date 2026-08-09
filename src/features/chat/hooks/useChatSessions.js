@@ -94,20 +94,43 @@ export function useChatSessions() {
     };
   }, []);
 
-  const selectSession = useCallback((id) => {
-    setActiveId(id);
-    setMessages(loadMessages(messageKeyFor(id)));
+  /**
+   * 立刻把当前会话落盘。
+   *
+   * 切会话前必须调 —— 防抖 effect 的 cleanup 只 clearTimeout，
+   * 所以在 400ms 窗口内切走时，刚发的消息**从未写进 localStorage**：
+   *   在 A 发消息 → 400ms 内切到 B → 切回 A → 那条消息没了。
+   * 这是静默数据丢失，用户不会知道发生了什么。
+   */
+  const flushNow = useCallback(() => {
+    const id = activeIdRef.current;
+    if (!id) return;
+    saveMessages(messagesRef.current, messageKeyFor(id));
   }, []);
 
+  const selectSession = useCallback((id) => {
+    flushNow(); // 先保住当前会话，再切走
+    setActiveId(id);
+    setMessages(loadMessages(messageKeyFor(id)));
+    // 清掉上一个会话的保存错误 —— 那是「那个会话太大」，
+    // 留着会在新会话上误报。新会话若也有问题，防抖保存会重新置上。
+    setSaveError(null);
+  }, [flushNow]);
+
   const newSession = useCallback(() => {
+    flushNow(); // 同上：新建前先保住当前会话
     const s = createSession();
     setSessions((prev) => [s, ...prev]);
     setActiveId(s.id);
     setMessages([]);
+    setSaveError(null); // 新会话是空的，不该继承旧会话的保存错误
     return s.id;
-  }, []);
+  }, [flushNow]);
 
   const deleteSession = useCallback((id) => {
+    // 删的不是当前会话时，当前会话仍需保住（删除会触发 setSessions →
+    // 防抖 effect 重跑 → 旧定时器被 clearTimeout 丢掉）
+    if (id !== activeIdRef.current) flushNow();
     // 从 state（真源）删除，不读 localStorage —— localStorage 的持久化是
     // 异步 effect，新建会话后立即删除时 localStorage 里还没有它，读了会
     // 造成 state 与 localStorage 不一致（幽灵会话在下次加载时复活）。
@@ -128,7 +151,7 @@ export function useChatSessions() {
       return next;
     });
     try { localStorage.removeItem(messageKeyFor(id)); } catch { /* 忽略 */ }
-  }, [activeId]);
+  }, [activeId, flushNow]);
 
   const renameSession = useCallback((id, title) => {
     setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, title, updatedAt: Date.now() } : s)));
