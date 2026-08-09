@@ -24,6 +24,10 @@ export default function ModelPicker({ open, models, current, initialQuery = '', 
   const [query, setQuery] = useState(initialQuery);
   const [index, setIndex] = useState(0);
   const inputRef = useRef(null);
+  // 选中项引用：键盘上下键移动时把它滚进视野。
+  // 之前没有这个，↑↓ 走到列表外面时高亮跟着走了、视口没动，
+  // 看起来就像「选中框歪了/偏上」——其实是选中项已经滚出可视区。
+  const activeItemRef = useRef(null);
 
   const recent = useMemo(() => (open ? loadRecentModels() : []), [open]);
 
@@ -76,6 +80,13 @@ export default function ModelPicker({ open, models, current, initialQuery = '', 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open, filtered, index, onPick]);
+
+  // 选中项滚进视野。block:'nearest' 只在真的看不见时才滚 ——
+  // 用 'center' 会让每次按键都把列表居中，跳动很晃眼。
+  useEffect(() => {
+    if (!open) return;
+    activeItemRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [index, open]);
 
   const handlePick = (m) => {
     pushRecentModel(m);
@@ -143,10 +154,19 @@ export default function ModelPicker({ open, models, current, initialQuery = '', 
             <React.Fragment key={m}>
               {showDivider && <Divider sx={{ my: 0.5 }} />}
               <ListItemButton
+                // 选中项的 DOM 引用：键盘导航时要把它滚进视野
+                ref={i === index ? activeItemRef : null}
                 selected={i === index}
                 onClick={() => handlePick(m)}
                 onMouseEnter={() => setIndex(i)}
-                sx={{ py: 0.85, px: 2, mx: 0.5, borderRadius: 1 }}
+                sx={{
+                  py: 0.85, px: 1.5, mx: 1, borderRadius: 1,
+                  // 选中高亮用 border 而非纯背景色，暗色主题下更清楚
+                  '&.Mui-selected': {
+                    bgcolor: alpha(theme.palette.primary.main, 0.14),
+                    '&:hover': { bgcolor: alpha(theme.palette.primary.main, 0.2) },
+                  },
+                }}
               >
                 <ListItemText
                   primary={

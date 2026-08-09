@@ -547,10 +547,21 @@ export default function ChatApp() {
                   <Typography variant="caption" sx={{ display: 'block', opacity: 0.75 }}>
                     {bridgeInfo.mode === 'sub2api' ? t('sub2api 模式') : t('New API 模式')}
                   </Typography>
+                  <Typography variant="caption" sx={{ display: 'block', opacity: 0.75, mt: 0.25 }}>
+                    {t('点击打开主站控制台')}
+                  </Typography>
                 </Box>
               }
             >
+              {/* 用 <a> 而不是 onClick —— 中键/右键「新标签打开」这些
+                  浏览器原生行为能正常工作，也对读屏友好。
+                  同源相对路径，不写死域名，本地开发和线上都对。
+                  目标是 /dashboard 而不是 / —— 线上 / 被 Caddy 接成了落地页
+                  （宣传页），控制台是 sub2api 的 SPA 路由。 */}
               <Box
+                component="a"
+                href="/dashboard"
+                aria-label={t('打开主站控制台')}
                 sx={{
                   width: 24, height: 24, flexShrink: 0,
                   borderRadius: '50%',
@@ -558,7 +569,13 @@ export default function ChatApp() {
                   bgcolor: alpha(theme.palette.primary.main, 0.14),
                   color: 'primary.main',
                   fontSize: '0.68rem', fontWeight: 700,
-                  userSelect: 'none', cursor: 'default',
+                  userSelect: 'none', cursor: 'pointer',
+                  textDecoration: 'none',
+                  transition: 'background-color 150ms, transform 150ms',
+                  '&:hover': {
+                    bgcolor: alpha(theme.palette.primary.main, 0.26),
+                    transform: 'scale(1.08)',
+                  },
                 }}
               >
                 {(userEmail || '?').trim().charAt(0).toUpperCase()}
@@ -566,11 +583,15 @@ export default function ChatApp() {
             </Tooltip>
           )}
           {!bridgeLoading && !bridgeInfo && (
-            <Tooltip title={t('未登录 —— 请先在面板登录')} arrow>
+            <Tooltip title={t('未登录 —— 点击前往登录')} arrow>
+              {/* 未登录时点它直接去登录页，而不是只告诉用户"请去登录" */}
               <Chip
                 size="small"
                 variant="outlined"
                 color="warning"
+                clickable
+                component="a"
+                href="/login"
                 label={t('未登录')}
                 sx={{ fontSize: '0.68rem', height: 22 }}
               />
