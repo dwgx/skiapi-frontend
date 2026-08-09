@@ -54,15 +54,24 @@ export function loadMessages(storageKey) {
   }
 }
 
-// 保存：截断 → 上限 → 估算体积，超限丢弃（宁可丢最旧的保存项也不写爆）
+// 保存结果。调用方据此提示用户 —— 静默失败是最糟的：
+// 用户以为存了，刷新后发现最近的消息全没了，还不知道为什么。
+export const SAVE_OK = 'ok';
+export const SAVE_TOO_LARGE = 'too_large';   // 超过体积上限，本轮未落盘
+export const SAVE_QUOTA_FULL = 'quota_full'; // localStorage 配额满/不可用
+
+/**
+ * 保存：截断 → 上限 → 估算体积。
+ * @returns {'ok'|'too_large'|'quota_full'} 保存结果，调用方可用来提示用户
+ */
 export function saveMessages(messages, storageKey) {
   const key = storageKey || STORAGE_KEYS.MESSAGES;
   try {
-    if (!Array.isArray(messages)) return;
-    // 结构校验：全非法就直接放弃本轮保存
+    if (!Array.isArray(messages)) return SAVE_OK;
+    // 空数组视为清空，不算失败
     if (!messages.length) {
       localStorage.removeItem(key);
-      return;
+      return SAVE_OK;
     }
     const truncated = messages.slice(-MAX_MESSAGES).map((m) => ({
       ...m,
@@ -75,10 +84,13 @@ export function saveMessages(messages, storageKey) {
         : undefined,
     }));
     const json = JSON.stringify(truncated);
-    if (estimateBytes(json) > MAX_STORAGE_BYTES) return; // 超限放弃，保留旧数据
+    // 超限：保留旧数据而不是写爆，但必须告知调用方
+    if (estimateBytes(json) > MAX_STORAGE_BYTES) return SAVE_TOO_LARGE;
     localStorage.setItem(key, json);
+    return SAVE_OK;
   } catch {
-    // localStorage 满/不可用，静默失败（不打断聊天）
+    // 配额满、隐私模式禁用 storage、序列化失败
+    return SAVE_QUOTA_FULL;
   }
 }
 

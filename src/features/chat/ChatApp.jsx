@@ -84,6 +84,7 @@ export default function ChatApp() {
   const {
     sessions, activeId, messages, setMessages,
     selectSession, newSession, deleteSession, renameSession, autoTitle, clearActive,
+    saveError,
   } = useChatSessions();
   const [config, setConfig] = useState(() => ({
     model: '', group: '', systemPrompt: '', stream: true,
@@ -589,6 +590,26 @@ export default function ChatApp() {
             <Button size="small" onClick={() => setShowSettings(false)}>{t('关闭')}</Button>
           </DialogActions>
         </Dialog>
+
+        {/* 保存失败警告：无声丢消息比崩溃更糟，必须显式告知 */}
+        {saveError && (
+          <Box
+            sx={{
+              mx: 2, mt: 1, px: 1.5, py: 1, borderRadius: 1.5,
+              bgcolor: alpha(theme.palette.warning.main, 0.1),
+              border: '1px solid',
+              borderColor: alpha(theme.palette.warning.main, 0.35),
+              display: 'flex', alignItems: 'center', gap: 1,
+            }}
+          >
+            <ErrorOutline sx={{ fontSize: 16, color: 'warning.main', flexShrink: 0 }} />
+            <Typography variant="caption" sx={{ color: 'warning.main', flex: 1 }}>
+              {saveError === 'too_large'
+                ? t('这个会话太大，新消息已停止自动保存。建议导出后新建会话。')
+                : t('浏览器存储不可用或已满，新消息不会被保存。建议导出重要内容。')}
+            </Typography>
+          </Box>
+        )}
 
         {/* 错误横幅 */}
         {keyError && (

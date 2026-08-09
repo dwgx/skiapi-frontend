@@ -7,7 +7,7 @@
 // 模块级缓存不会造成跨实例污染，却能让三个 state 共享同一个 boot 结果。
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { loadMessages, saveMessages } from '../lib/storage';
+import { loadMessages, saveMessages, SAVE_OK } from '../lib/storage';
 import { STORAGE_KEYS } from '../types';
 import { createSession, DEFAULT_SESSION_TITLE } from '../lib/session';
 
@@ -50,6 +50,8 @@ export function useChatSessions() {
   const [activeId, setActiveId] = useState(boot.activeId);
   // 当前会话的消息。切换会话时从对应 localStorage 加载。
   const [messages, setMessages] = useState(boot.messages);
+  // 持久化失败的原因（null = 正常）。上层据此提示用户，避免无声丢消息。
+  const [saveError, setSaveError] = useState(null);
 
   // 最新值 ref（effect/beforeunload 回调里读，避免闭包陈旧）。
   // 用 useEffect 同步而非 render 期赋值 —— react-hooks/refs 禁止 render 写 ref。
@@ -65,11 +67,15 @@ export function useChatSessions() {
     try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions)); } catch { /* 满，忽略 */ }
   }, [sessions]);
 
-  // 防抖保存当前会话消息
+  // 防抖保存当前会话消息。
+  // 保存失败必须让用户知道 —— 静默失败的话，用户以为存了，
+  // 刷新后发现最近的消息全没了，且不知道原因。
   useEffect(() => {
     if (!activeId) return;
     const timer = setTimeout(() => {
-      saveMessages(messagesRef.current, messageKeyFor(activeIdRef.current));
+      const r = saveMessages(messagesRef.current, messageKeyFor(activeIdRef.current));
+      if (r !== SAVE_OK) setSaveError(r);
+      else setSaveError(null);
     }, 400);
     return () => clearTimeout(timer);
   }, [messages, activeId]);
@@ -147,5 +153,6 @@ export function useChatSessions() {
   return {
     sessions, activeId, messages, setMessages,
     selectSession, newSession, deleteSession, renameSession, clearActive, autoTitle,
+    saveError,
   };
 }
