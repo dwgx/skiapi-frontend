@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/png" href="/favicon.png">
+<title>模型广场 — SkiAPI</title>
+<style>
+/* ============================================================================
+   模型广场
+   ----------------------------------------------------------------------------
+   这是 dwgx/skiapi-frontend 的 src/pages/Pricing.jsx 移植版，**不是** sub2api
+   自带那套 8 列宽表。设计语言（配色、卡片手法、动画曲线）照搬原件，只把 MUI
+   的 sx 翻译成原生 CSS，并把数据层适配到本站 /api/v1/model-plaza。
+
+   被迫偏离原件的三处，各自注明：
+   1. Geist / Geist Mono 换系统栈 —— 应用下发的 CSP 只放行 'self'，webfont
+      外链会被拦，内嵌字体文件又让单文件体积翻倍。
+   2. 原件字段是 model_ratio / completion_ratio / model_price / quota_per_unit，
+      本站接口是 groups[].models[].pricing 与 official_pricing，所以筛选维度
+      从"厂商 + 分组"改成"分组 + 由模型名推导厂商"。
+   3. VendorIcon 依赖图片资源，这里用首字母色块代替。
+   ========================================================================= */
+
+/* ---- 原件 src/theme/index.js 的 TOKENS_DARK / TOKENS_LIGHT，逐值照搬 ---- */
+:root{
+  --canvas:#0F0F0F; --surface:#1A1A1A; --raised:#242424; --bright:#2E2E2E;
+  --hover:#1E1E1E; --border:#2E2E2E; --border-strong:#3D3D3D;
+  --text:#E3E3E3; --muted:#A0A0A0; --subtle:#6E6E6E;
+  --accent:#A78BFA; --accent-dim:#7C3AED; --accent-surface:#1E1533;
+  --success:#34D399; --warn:#FBBF24; --error:#F87171; --info:#60A5FA;
+  /* 原件的 M3 缓动与时长梯度 */
+  --ease:cubic-bezier(0.2,0,0,1);
+  --d-micro:100ms; --d-short:200ms; --d-med:300ms;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+html.light{
+  --canvas:#F8F8FA; --surface:#FFFFFF; --raised:#F0F0F3; --bright:#E8E8EC;
+  --hover:#F4F4F6; --border:#E0E0E5; --border-strong:#C8C8D0;
+  --text:#1A1A1A; --muted:#5C5C66; --subtle:#8C8C96;
+  --accent:#7C3AED; --accent-dim:#6D28D9; --accent-surface:#F0EBFF;
+  --success:#16A34A; --warn:#D97706; --error:#DC2626; --info:#2563EB;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--canvas);color:var(--text);font-family:var(--sans);
+  line-height:1.6;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* 原件的 pricingFadeUp */
+@keyframes pricingFadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+
+/* ---- 顶栏 ---------------------------------------------------------------- */
+.top{position:sticky;top:0;z-index:40;background:color-mix(in srgb,var(--canvas) 85%,transparent);
+  backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+.top-in{max-width:1440px;margin:0 auto;padding:0 24px;height:56px;
+  display:flex;align-items:center;gap:14px}
+.brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px}
+.brand img{width:24px;height:24px;border-radius:6px}
+.top-sp{flex:1}
+.ibtn{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+  color:var(--muted);transition:background var(--d-short) var(--ease),color var(--d-short) var(--ease)}
+.ibtn:hover{background:var(--hover);color:var(--text)}
+.ibtn:active{transform:scale(.94)}
+.ibtn svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
+.back{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);
+  padding:6px 11px;border-radius:9px;transition:background var(--d-short) var(--ease),color var(--d-short) var(--ease)}
+.back:hover{background:var(--hover);color:var(--text)}
+.back svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
+
+/* ---- hero ---------------------------------------------------------------- */
+.wrap{max-width:1440px;margin:0 auto;padding:0 24px}
+.hero{padding:34px 0 20px}
+.hero h1{font-size:clamp(1.6rem,3.4vw,2.1rem);font-weight:800;letter-spacing:-.025em;line-height:1.15}
+.hero p{color:var(--muted);font-size:14px;margin-top:8px;max-width:62ch}
+.hero-desc{margin-top:12px;padding:11px 14px;border-radius:12px;background:var(--surface);
+  border:1px solid var(--border);font-size:13px;color:var(--muted);white-space:pre-line}
+
+/* 统计卡：原件 StatCard 的 alpha(color,.08) 底 + alpha(color,.12) 边 */
+.stats{display:flex;gap:11px;flex-wrap:wrap;margin-top:16px}
+.stat{display:flex;align-items:center;gap:12px;padding:12px 20px;border-radius:14px;
+  flex:1;min-width:160px}
+.stat-ic{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;flex:none}
+.stat-ic svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
+.stat b{display:block;font-weight:800;font-size:1.1rem;line-height:1.1;
+  font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.stat span{font-size:.68rem;color:var(--muted)}
+
+/* 厂商 pill：原件 VendorPill，含 backdrop-filter 与 :active scale(.97) */
+.pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+.pill{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:20px;
+  border:1.5px solid color-mix(in srgb,var(--border) 65%,transparent);
+  background:color-mix(in srgb,var(--surface) 55%,transparent);
+  backdrop-filter:blur(8px);transition:all var(--d-short) var(--ease)}
+.pill:hover{transform:translateY(-1px)}
+.pill:active{transform:scale(.97)}
+.pill-dot{width:18px;height:18px;border-radius:5px;display:grid;place-items:center;
+  font-size:9.5px;font-weight:800;color:#fff;flex:none}
+.pill-n{font-size:.76rem;font-weight:500}
+.pill[aria-pressed="true"] .pill-n{font-weight:700}
+.pill-c{padding:1px 5px;border-radius:5px;font-size:.6rem;font-weight:700;
+  background:color-mix(in srgb,var(--text) 6%,transparent);color:var(--muted)}
+
+/* ---- 主体：sticky 240px 侧栏 + 内容（原件的骨架） ---------------------- */
+.main{display:grid;grid-template-columns:240px 1fr;gap:26px;padding:22px 0 60px}
+@media (max-width:960px){.main{grid-template-columns:1fr}.side{position:static;max-height:none}}
+.side{position:sticky;top:76px;align-self:start;max-height:calc(100vh - 96px);
+  overflow-y:auto;scrollbar-width:thin}
+.fsec{margin-bottom:20px}
+.fsec-t{font-weight:700;font-size:.72rem;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.08em;margin-bottom:8px;display:block}
+.chips{display:flex;flex-wrap:wrap;gap:4px}
+/* 原件 FilterChip：label + ratio 徽章 + count 徽章 */
+.chip{display:inline-flex;align-items:center;gap:4px;padding:3.5px 10px;border-radius:9px;
+  border:1px solid color-mix(in srgb,var(--border) 60%,transparent);
+  background:transparent;transition:border-color 150ms ease,background 150ms ease}
+.chip:hover{border-color:color-mix(in srgb,var(--accent) 50%,transparent);
+  background:color-mix(in srgb,var(--accent) 8%,transparent)}
+.chip-l{font-size:.72rem;font-weight:500;line-height:1.4}
+.chip[aria-pressed="true"]{border-color:color-mix(in srgb,var(--accent) 50%,transparent);
+  background:color-mix(in srgb,var(--accent) 14%,transparent)}
+.chip[aria-pressed="true"] .chip-l{font-weight:700;color:var(--accent)}
+.chip-r{font-size:.62rem;font-weight:600;color:var(--muted);opacity:.8;
+  font-variant-numeric:tabular-nums}
+.chip[aria-pressed="true"] .chip-r{color:var(--accent)}
+.chip-c{padding:.5px 4px;border-radius:4px;min-width:16px;text-align:center;
+  font-size:.58rem;font-weight:700;
+  background:color-mix(in srgb,var(--text) 6%,transparent);color:var(--muted)}
+.chip[aria-pressed="true"] .chip-c{background:color-mix(in srgb,var(--accent) 15%,transparent);
+  color:var(--accent)}
+.gdesc{font-size:11.6px;color:var(--muted);line-height:1.65;white-space:pre-line}
+.grate{margin-top:7px;font-family:var(--mono);font-size:11px;color:var(--accent)}
+
+/* ---- 控制条 -------------------------------------------------------------- */
+.ctrl{display:flex;gap:11px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.search{position:relative;flex:1;min-width:190px;max-width:340px}
+.search svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);
+  width:15px;height:15px;fill:none;stroke:var(--subtle);stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+.search input{width:100%;height:38px;padding:0 12px 0 34px;border-radius:11px;
+  background:var(--surface);border:1px solid var(--border);color:var(--text);
+  font-size:13.5px;font-family:var(--sans);outline:none;
+  transition:border-color var(--d-short) var(--ease)}
+.search input:focus{border-color:var(--accent)}
+.search input::placeholder{color:var(--subtle)}
+.seg{display:inline-flex;border-radius:11px;overflow:hidden;border:1px solid var(--border)}
+.seg button{padding:0 13px;height:38px;font-size:12.5px;color:var(--muted);
+  transition:background var(--d-short) var(--ease),color var(--d-short) var(--ease)}
+.seg button+button{border-left:1px solid var(--border)}
+.seg button[aria-pressed="true"]{background:color-mix(in srgb,var(--accent) 14%,transparent);
+  color:var(--accent);font-weight:600}
+.ctrl-sp{flex:1}
+.count{font-size:12.5px;color:var(--subtle);font-variant-numeric:tabular-nums}
+
+/* ---- 模型卡：原件 ModelCard 逐条还原 ------------------------------------ */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:12px}
+.card{position:relative;overflow:hidden;border-radius:14px;background:var(--surface);
+  border:1px solid var(--border);padding:16px;display:flex;flex-direction:column;
+  animation:pricingFadeUp var(--d-med) ease-out both;
+  transition:transform 250ms var(--ease),border-color 250ms var(--ease)}
+/* 顶部 2px 强调条：默认 opacity 0，hover 才出现 —— 原件最关键的一笔 */
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;opacity:0;
+  transition:opacity 250ms ease;
+  background:linear-gradient(90deg,var(--vc),color-mix(in srgb,var(--vc) 20%,transparent))}
+.card:hover{transform:translateY(-4px);border-color:color-mix(in srgb,var(--vc) 40%,transparent);
+  box-shadow:0 8px 30px color-mix(in srgb,var(--vc) 15%,transparent)}
+.card:hover::before{opacity:1}
+.card-hd{display:flex;align-items:flex-start;gap:9px;margin-bottom:13px}
+.card-ic{width:32px;height:32px;border-radius:9px;flex:none;display:grid;place-items:center;
+  font-size:12px;font-weight:800;color:#fff}
+.card-nm{flex:1;min-width:0}
+.card-nm b{display:block;font-weight:700;line-height:1.3;font-size:.8rem;
+  font-family:var(--mono);overflow-wrap:anywhere}
+.card-nm span{font-size:.68rem;font-weight:600;opacity:.85;color:var(--vc)}
+/* 复制按钮：opacity 0 → 卡片 hover .5 → 自身 hover 1（原件行为） */
+.card-cp{opacity:0;width:24px;height:24px;border-radius:7px;flex:none;display:grid;
+  place-items:center;color:var(--muted);transition:all var(--d-short) var(--ease)}
+.card:hover .card-cp{opacity:.5}
+.card-cp:hover{opacity:1;color:var(--vc);background:color-mix(in srgb,var(--vc) 12%,transparent)}
+.card-cp:focus-visible{opacity:1}
+.card-cp svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
+/* 价格块：等宽 + 细边 + 极淡底（原件 alpha(white,.03)） */
+.px{margin-bottom:12px;padding:10px 11px;border-radius:9px;font-family:var(--mono);
+  background:color-mix(in srgb,var(--text) 3%,transparent);
+  border:1px solid color-mix(in srgb,var(--border) 65%,transparent)}
+.px-r{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
+  font-size:11.4px;line-height:1.9}
+.px-r dt{color:var(--muted)}
+.px-r dd{font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.px-r.hi dd{color:var(--accent);font-weight:700}
+.px-off{margin-top:6px;padding-top:6px;
+  border-top:1px dashed color-mix(in srgb,var(--border) 80%,transparent)}
+.px-off .px-r{font-size:10.6px}
+.px-off dd{color:var(--subtle)}
+.tags{display:flex;gap:5px;flex-wrap:wrap;margin-top:auto}
+.tag{font-size:.62rem;padding:2px 7px;border-radius:6px;font-weight:600;
+  background:color-mix(in srgb,var(--info) 13%,transparent);color:var(--info);
+  font-family:var(--mono)}
+.tag.think{background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)}
+.tag.grp{background:color-mix(in srgb,var(--text) 7%,transparent);color:var(--muted);
+  font-weight:500;font-family:var(--sans)}
+
+/* ---- 表格视图（原件的 compact table） ----------------------------------- */
+.tbl-wrap{border-radius:14px;overflow:auto;background:var(--surface);border:1px solid var(--border)}
+table{width:100%;border-collapse:collapse;font-size:12.8px}
+thead th{position:sticky;top:0;z-index:2;background:var(--raised);padding:10px 14px;
+  text-align:left;font-weight:700;font-size:11.6px;color:var(--muted);white-space:nowrap;
+  border-bottom:1px solid var(--border)}
+tbody td,tbody th{padding:9px 14px;text-align:left;font-weight:400;
+  border-bottom:1px solid color-mix(in srgb,var(--border) 55%,transparent)}
+tbody tr:last-child td{border-bottom:none}
+tbody tr{transition:background var(--d-micro) var(--ease)}
+tbody tr:hover{background:var(--hover)}
+th.n,td.n{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;
+  letter-spacing:-.02em}
+td.m{font-family:var(--mono);font-size:12px}
+td.hi{color:var(--accent);font-weight:600}
+td.off{color:var(--subtle)}
+.vd{display:inline-flex;align-items:center;gap:6px}
+.vd i{width:16px;height:16px;border-radius:4px;display:grid;place-items:center;
+  font-size:8.5px;font-weight:800;color:#fff;flex:none;font-style:normal}
+
+/* ---- 状态 ---------------------------------------------------------------- */
+.msg{padding:56px 22px;text-align:center;color:var(--muted);background:var(--surface);
+  border:1px solid var(--border);border-radius:14px}
+.msg b{display:block;font-size:15px;color:var(--text);margin-bottom:6px}
+.msg code{font-family:var(--mono);font-size:12px;background:var(--raised);
+  padding:2px 6px;border-radius:5px}
+/* 骨架屏：原件用 MUI Skeleton，这里自己画 */
+.sk{border-radius:14px;background:var(--surface);border:1px solid var(--border);
+  height:172px;position:relative;overflow:hidden}
+.sk::after{content:'';position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--text) 5%,transparent),transparent);
+  animation:shim 1.4s infinite}
+@keyframes shim{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+.toast{position:fixed;bottom:24px;left:50%;transform:translate(-50%,80px);
+  background:var(--raised);border:1px solid var(--border);color:var(--text);
+  padding:9px 16px;border-radius:11px;font-size:13px;opacity:0;z-index:90;
+  transition:opacity var(--d-med) var(--ease),transform var(--d-med) var(--ease);
+  pointer-events:none;box-shadow:0 8px 30px rgba(0,0,0,.35)}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="top-in">
+    <a class="back" href="/"><svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 19-7-7 7-7"/></svg><span data-i="back">返回</span></a>
+    <a class="brand" href="/"><img src="/favicon.png" alt=""><span>SkiAPI</span></a>
+    <span class="top-sp"></span>
+    <button class="ibtn" id="lang" title="切换语言"><span id="lang-t" style="font-size:11px;font-weight:700">ZH</span></button>
+    <button class="ibtn" id="theme" title="切换主题" aria-label="切换主题">
+      <svg viewBox="0 0 24 24" id="theme-ic"></svg>
+    </button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="hero">
+    <h1 data-i="h1">模型广场</h1>
+    <p data-i="sub">本站价与各家官方价并列。价格随上游调整，此页实时读取接口。</p>
+    <div class="hero-desc" id="desc" hidden></div>
+    <div class="stats" id="stats"></div>
+    <div class="pills" id="pills"></div>
+  </div>
+
+  <div class="main">
+    <aside class="side" id="side"></aside>
+    <div>
+      <div class="ctrl">
+        <div class="search">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+          <input id="q" type="search" placeholder="搜索模型…" autocomplete="off" aria-label="搜索模型">
+        </div>
+        <div class="seg" role="group" aria-label="视图">
+          <button id="v-card" aria-pressed="true" data-i="v.card">卡片</button>
+          <button id="v-tbl" aria-pressed="false" data-i="v.table">表格</button>
+        </div>
+        <div class="seg" role="group" aria-label="排序">
+          <button id="s-name" aria-pressed="true" data-i="s.name">按名称</button>
+          <button id="s-price" aria-pressed="false" data-i="s.price">按价格</button>
+        </div>
+        <span class="ctrl-sp"></span>
+        <span class="count" id="count"></span>
+      </div>
+      <div id="out"><div class="grid"><div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+
+/* ---- 原件 Pricing.jsx 的 VENDOR_COLORS，整表照搬 ----------------------- */
+const VENDOR_COLORS = {
+  'OpenAI':'#10A37F','Anthropic':'#D4A574','Claude':'#D4A574',
+  'Google':'#4285F4','Gemini':'#4285F4','xAI':'#1DA1F2','Grok':'#1DA1F2',
+  'Meta':'#0668E1','DeepSeek':'#4D6BFE','阿里巴巴':'#FF6A00','Qwen':'#FF6A00',
+  'Mistral':'#F54E42','Cohere':'#39594D','Moonshot':'#5B5BD6',
+  'Perplexity':'#20808D','SiliconCloud':'#6366F1','百度':'#2932E1','智谱':'#3B5998',
+  'MiniMax':'#E8467C',
+};
+/* 本站接口不返回 vendor 字段，按模型名前缀推导，好让厂商强调色用得上。
+   顺序有意义：claude 必须在 gpt 之前判断，否则 Claude 分组里的 gpt-4o 会串色。 */
+const VENDOR_RULES = [
+  [/^claude/i,'Claude'], [/^gpt|^o[134]-|^chatgpt/i,'OpenAI'], [/^gemini/i,'Gemini'],
+  [/^deepseek/i,'DeepSeek'], [/^qwen/i,'Qwen'], [/^glm/i,'智谱'],
+  [/^minimax/i,'MiniMax'], [/^grok/i,'xAI'], [/^moonshot|^kimi/i,'Moonshot'],
+  [/^mistral/i,'Mistral'], [/^llama/i,'Meta'],
+];
+const vendorOf = n => (VENDOR_RULES.find(([re]) => re.test(n)) || [null,'其它'])[1];
+const vcOf = v => VENDOR_COLORS[v] || '#A78BFA';
+
+/* ---- i18n --------------------------------------------------------------- */
+const EN = {
+  'back':'Back','h1':'Model Plaza',
+  'sub':'Our price next to each vendor’s list price. Read live from the API.',
+  'ph':'Search models…','v.card':'Cards','v.table':'Table','s.name':'By name','s.price':'By price',
+  'f.group':'Group','f.all':'All',
+  'th.model':'Model','th.vendor':'Vendor','th.in':'input','th.out':'output',
+  'th.cw':'cache write','th.cr':'cache read','th.off':'list price','th.grp':'Group',
+  'st.models':'models','st.groups':'groups','st.cheapest':'cheapest input',
+  'copied':'Model name copied','err':'Could not load','off':'Model plaza is not enabled',
+  'offd':'An administrator can enable it in settings.','empty':'No models match',
+  'rate':'effective rate',
+};
+let lang = 'zh';
+try { if (localStorage.getItem('lang') === 'en') lang = 'en'; } catch (e) {}
+const ZH = {};
+document.querySelectorAll('[data-i]').forEach(el => ZH[el.dataset.i] = el.textContent);
+ZH['ph'] = $('#q').placeholder;
+ZH['th.in'] = '输入'; ZH['th.out'] = '输出'; ZH['th.cw'] = '缓存写入';
+ZH['th.cr'] = '缓存读取'; ZH['th.off'] = '官方价'; ZH['th.model'] = '模型';
+ZH['th.vendor'] = '厂商'; ZH['th.grp'] = '分组'; ZH['f.group'] = '分组'; ZH['f.all'] = '全部';
+ZH['st.models'] = '个模型'; ZH['st.groups'] = '个分组'; ZH['st.cheapest'] = '最低输入价';
+ZH['copied'] = '模型名已复制'; ZH['err'] = '加载失败'; ZH['off'] = '模型广场未启用';
+ZH['offd'] = '管理员可在后台设置里开启。'; ZH['empty'] = '没有匹配的模型';
+ZH['rate'] = '实际倍率';
+const t = k => (lang === 'en' ? EN[k] : ZH[k]) || k;
+
+/* ---- 主题：与站内其它页共用 localStorage 的 'theme' 键 ------------------ */
+const MOON = '<path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/>';
+const SUN = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>';
+let dark = true;
+try {
+  const s = localStorage.getItem('theme');
+  dark = s ? s === 'dark' : !matchMedia('(prefers-color-scheme: light)').matches;
+} catch (e) { /* 隐私模式下访问 localStorage 会抛，用默认值 */ }
+function applyTheme() {
+  document.documentElement.classList.toggle('light', !dark);
+  $('#theme-ic').innerHTML = dark ? MOON : SUN;
+}
+applyTheme();
+$('#theme').onclick = () => {
+  dark = !dark; applyTheme();
+  try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch (e) {}
+};
+
+let toastT;
+function toast(m) {
+  const el = $('#toast'); el.textContent = m; el.classList.add('on');
+  clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove('on'), 1700);
+}
+function esc(s) {
+  // 模型名与分组描述都来自数据库（管理员可改）。一律转义，不给存储型 XSS 留路。
+  return String(s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* ---- 数据 ---------------------------------------------------------------
+   价格口径（我实测核对过，写错就是在钱上骗人）：
+     model.pricing.* 与 official_pricing.* **数值相同**（倍率 1.000），
+     折扣在**分组级** group.rate_multiplier 上（当前两组都是 0.08）。
+   所以本站实收 = pricing.<字段> × group.rate_multiplier × 1e6（换算成每 1M）。
+   直接显示 pricing.input_price 会把官方价当本站价 —— 那是最危险的一种错。
+
+   另有一处生产数据自相矛盾：分组描述写「按官方价的 5%」「10%」，而
+   rate_multiplier 是 0.08。这里原样显示描述，但把实际倍率单独标出来，
+   不让读者把描述里的百分比当成真实费率。
+   ========================================================================= */
+let MODELS = [], GROUPS = [], DESC = '';
+let fGroup = null, fVendor = null, view = 'card', sort = 'name', q = '';
+
+const perM = (v, mult) => (v == null ? null : v * 1e6 * mult);
+const fmtUSD = (v) => {
+  if (v == null) return '—';
+  if (v === 0) return '$0';
+  // 小数位按量级选，避免 4.0000000000000003e-7 这种浮点残渣直接显示给用户
+  const d = v >= 1 ? 2 : v >= 0.01 ? 4 : 6;
+  return '$' + v.toFixed(d);
+};
+
+function fail(html) { $('#out').innerHTML = '<div class="msg">' + html + '</div>'; }
+
+async function load() {
+  let r;
+  try {
+    r = await fetch('/api/v1/model-plaza', {cache:'no-store'});
+  } catch (e) {
+    return fail('<b>' + esc(t('err')) + '</b>' + esc(String(e && e.message || e)));
+  }
+  if (r.status === 404) {
+    return fail('<b>' + esc(t('off')) + '</b>' + esc(t('offd')) +
+      '<br><code>model_plaza_enabled = true</code>');
+  }
+  if (!r.ok) return fail('<b>' + esc(t('err')) + '</b>HTTP ' + r.status);
+  let j;
+  try { j = await r.json(); } catch (e) { return fail('<b>' + esc(t('err')) + '</b>JSON'); }
+
+  const d = (j && j.data) || j || {};
+  DESC = d.description || '';
+  const gs = Array.isArray(d.groups) ? d.groups : [];
+  GROUPS = gs.map(g => ({
+    name: g.name || '', desc: g.description || '',
+    mult: typeof g.rate_multiplier === 'number' ? g.rate_multiplier : 1,
+  }));
+  MODELS = [];
+  gs.forEach(g => {
+    const mult = typeof g.rate_multiplier === 'number' ? g.rate_multiplier : 1;
+    (Array.isArray(g.models) ? g.models : []).forEach(m => {
+      const p = m.pricing || {}, o = m.official_pricing || {};
+      const name = m.name || '-';
+      const v = vendorOf(name);
+      MODELS.push({
+        name, vendor: v, vc: vcOf(v), group: g.name || '', mult,
+        think: /-thinking$/.test(name),
+        inp: perM(p.input_price, mult), out: perM(p.output_price, mult),
+        cw: perM(p.cache_write_price, mult), cr: perM(p.cache_read_price, mult),
+        oInp: perM(o.input_price, 1), oOut: perM(o.output_price, 1),
+      });
+    });
+  });
+  if (!MODELS.length) return fail('<b>' + esc(t('empty')) + '</b>');
+  render();
+}
+
+function counts(key) {
+  const c = {};
+  MODELS.forEach(m => { c[m[key]] = (c[m[key]] || 0) + 1; });
+  return c;
+}
+
+function renderShell() {
+  if (DESC) { const el = $('#desc'); el.hidden = false; el.textContent = DESC; }
+
+  const cheapest = MODELS.reduce((a, m) =>
+    (m.inp != null && m.inp > 0 && (a == null || m.inp < a)) ? m.inp : a, null);
+  const svg = p => '<svg viewBox="0 0 24 24">' + p + '</svg>';
+  const stats = [
+    {c:'#A78BFA', v:MODELS.length, l:t('st.models'),
+     p:'<path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/>'},
+    {c:'#34D399', v:GROUPS.length, l:t('st.groups'),
+     p:'<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/>'},
+    {c:'#60A5FA', v:fmtUSD(cheapest), l:t('st.cheapest'),
+     p:'<path d="M22 7 13.5 15.5l-5-5L2 17"/><path d="M16 7h6v6"/>'},
+  ];
+  $('#stats').innerHTML = stats.map(s =>
+    '<div class="stat" style="background:color-mix(in srgb,' + s.c + ' 8%,transparent);' +
+    'border:1px solid color-mix(in srgb,' + s.c + ' 12%,transparent)">' +
+    '<div class="stat-ic" style="background:color-mix(in srgb,' + s.c + ' 12%,transparent);color:' +
+    s.c + '">' + svg(s.p) + '</div><div><b>' + esc(String(s.v)) + '</b><span>' +
+    esc(s.l) + '</span></div></div>').join('');
+
+  const vc = counts('vendor');
+  $('#pills').innerHTML = Object.entries(vc).sort((a,b) => b[1]-a[1]).map(([v,n]) => {
+    const on = fVendor === v, col = vcOf(v);
+    const sty = on ? ' style="border-color:color-mix(in srgb,' + col + ' 50%,transparent);' +
+      'background:color-mix(in srgb,' + col + ' 15%,transparent);' +
+      'box-shadow:0 2px 8px color-mix(in srgb,' + col + ' 25%,transparent)"' : '';
+    return '<button class="pill" data-v="' + esc(v) + '" aria-pressed="' + on + '"' + sty + '>' +
+      '<span class="pill-dot" style="background:' + col + '">' + esc(v.slice(0,1)) + '</span>' +
+      '<span class="pill-n"' + (on ? ' style="color:' + col + '"' : '') + '>' + esc(v) + '</span>' +
+      '<span class="pill-c">' + n + '</span></button>';
+  }).join('');
+  $('#pills').querySelectorAll('.pill').forEach(b => b.onclick = () => {
+    fVendor = fVendor === b.dataset.v ? null : b.dataset.v; render();
+  });
+
+  const gc = counts('group');
+  $('#side').innerHTML =
+    '<div class="fsec"><span class="fsec-t">' + esc(t('f.group')) + '</span><div class="chips">' +
+    '<button class="chip" data-g="" aria-pressed="' + (fGroup === null) + '">' +
+      '<span class="chip-l">' + esc(t('f.all')) + '</span>' +
+      '<span class="chip-c">' + MODELS.length + '</span></button>' +
+    GROUPS.map(g =>
+      '<button class="chip" data-g="' + esc(g.name) + '" aria-pressed="' + (fGroup === g.name) + '">' +
+      '<span class="chip-l">' + esc(g.name) + '</span>' +
+      '<span class="chip-r">' + g.mult + 'x</span>' +
+      '<span class="chip-c">' + (gc[g.name] || 0) + '</span></button>').join('') +
+    '</div></div>' +
+    GROUPS.filter(g => g.desc).map(g =>
+      '<div class="fsec"><span class="fsec-t">' + esc(g.name) + '</span>' +
+      '<div class="gdesc">' + esc(g.desc) + '</div>' +
+      '<div class="grate">' + esc(t('rate')) + ' ' + g.mult + 'x</div></div>').join('');
+  $('#side').querySelectorAll('.chip').forEach(b => b.onclick = () => {
+    fGroup = b.dataset.g === '' ? null : (fGroup === b.dataset.g ? null : b.dataset.g);
+    render();
+  });
+}
+
+function filtered() {
+  let r = MODELS.slice();
+  if (fGroup) r = r.filter(m => m.group === fGroup);
+  if (fVendor) r = r.filter(m => m.vendor === fVendor);
+  if (q) { const k = q.toLowerCase(); r = r.filter(m => m.name.toLowerCase().indexOf(k) >= 0); }
+  r.sort(sort === 'price'
+    ? (a,b) => (a.inp == null) - (b.inp == null) || (a.inp || 0) - (b.inp || 0) ||
+               a.name.localeCompare(b.name)
+    : (a,b) => a.name.localeCompare(b.name));
+  return r;
+}
+
+const CP = '<svg viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+
+function render() {
+  if (!MODELS.length) return;
+  renderShell();
+  const rows = filtered();
+  $('#count').textContent = rows.length + ' / ' + MODELS.length;
+  const out = $('#out');
+  if (!rows.length) { out.innerHTML = '<div class="msg"><b>' + esc(t('empty')) + '</b></div>'; return; }
+
+  if (view === 'card') {
+    out.innerHTML = '<div class="grid">' + rows.map((m, i) =>
+      '<article class="card" style="--vc:' + m.vc + ';animation-delay:' +
+        Math.min(i * 0.03, 0.4).toFixed(2) + 's">' +
+        '<div class="card-hd">' +
+          '<div class="card-ic" style="background:color-mix(in srgb,' + m.vc +
+            ' 82%,transparent)">' + esc(m.vendor.slice(0,1)) + '</div>' +
+          '<div class="card-nm"><b>' + esc(m.name) + '</b><span>' + esc(m.vendor) + '</span></div>' +
+          '<button class="card-cp" data-cp="' + esc(m.name) + '" aria-label="' +
+            esc(lang === 'en' ? 'Copy model name' : '复制模型名') + '">' + CP + '</button>' +
+        '</div>' +
+        '<dl class="px">' +
+          '<div class="px-r hi"><dt>' + esc(t('th.in')) + '</dt><dd>' + fmtUSD(m.inp) + '</dd></div>' +
+          '<div class="px-r hi"><dt>' + esc(t('th.out')) + '</dt><dd>' + fmtUSD(m.out) + '</dd></div>' +
+          (m.cr != null ? '<div class="px-r"><dt>' + esc(t('th.cr')) + '</dt><dd>' +
+            fmtUSD(m.cr) + '</dd></div>' : '') +
+          (m.oInp != null ? '<div class="px-off"><div class="px-r"><dt>' + esc(t('th.off')) +
+            '</dt><dd>' + fmtUSD(m.oInp) + ' / ' + fmtUSD(m.oOut) + '</dd></div></div>' : '') +
+        '</dl>' +
+        '<div class="tags"><span class="tag">' + m.mult + 'x</span>' +
+          (m.think ? '<span class="tag think">thinking</span>' : '') +
+          '<span class="tag grp">' + esc(m.group) + '</span></div>' +
+      '</article>').join('') + '</div>';
+  } else {
+    out.innerHTML = '<div class="tbl-wrap"><table><thead><tr>' +
+      '<th scope="col">' + esc(t('th.model')) + '</th><th scope="col">' + esc(t('th.vendor')) + '</th>' +
+      '<th scope="col" class="n">' + esc(t('th.in')) + '</th>' +
+      '<th scope="col" class="n">' + esc(t('th.out')) + '</th>' +
+      '<th scope="col" class="n">' + esc(t('th.cw')) + '</th>' +
+      '<th scope="col" class="n">' + esc(t('th.cr')) + '</th>' +
+      '<th scope="col" class="n">' + esc(t('th.off')) + '</th>' +
+      '<th scope="col">' + esc(t('th.grp')) + '</th></tr></thead><tbody>' +
+      rows.map(m =>
+      '<tr><td class="m">' + esc(m.name) +
+        (m.think ? ' <span class="tag think">t</span>' : '') + '</td>' +
+      '<td><span class="vd"><i style="background:' + m.vc + '">' + esc(m.vendor.slice(0,1)) +
+        '</i>' + esc(m.vendor) + '</span></td>' +
+      '<td class="n hi">' + fmtUSD(m.inp) + '</td><td class="n hi">' + fmtUSD(m.out) + '</td>' +
+      '<td class="n">' + fmtUSD(m.cw) + '</td><td class="n">' + fmtUSD(m.cr) + '</td>' +
+      '<td class="n off">' + fmtUSD(m.oInp) + '</td>' +
+      '<td class="m" style="color:var(--muted);font-size:11.4px">' + esc(m.group) + '</td></tr>')
+      .join('') + '</tbody></table></div>';
+  }
+
+  out.querySelectorAll('[data-cp]').forEach(b => b.onclick = async () => {
+    const v = b.dataset.cp;
+    try { await navigator.clipboard.writeText(v); }
+    catch (e) {
+      // 非 HTTPS 或权限被拒时 clipboard API 不可用，退回选中让用户自己按 ⌘C
+      const ta = document.createElement('textarea');
+      ta.value = v; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch (e2) {}
+      ta.remove();
+    }
+    toast(t('copied'));
+  });
+}
+
+/* ---- 控件 --------------------------------------------------------------- */
+let qT;
+$('#q').oninput = e => {
+  q = e.target.value.trim();
+  clearTimeout(qT); qT = setTimeout(render, 120);   // 去抖：43 个模型也别每键重排
+};
+function segPair(aSel, bSel, aVal, bVal, set) {
+  const a = $(aSel), b = $(bSel);
+  a.onclick = () => { set(aVal); a.setAttribute('aria-pressed','true'); b.setAttribute('aria-pressed','false'); render(); };
+  b.onclick = () => { set(bVal); b.setAttribute('aria-pressed','true'); a.setAttribute('aria-pressed','false'); render(); };
+}
+segPair('#v-card', '#v-tbl', 'card', 'tbl', v => view = v);
+segPair('#s-name', '#s-price', 'name', 'price', s => sort = s);
+
+function applyLang() {
+  $('#lang-t').textContent = lang === 'en' ? 'EN' : 'ZH';
+  document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN';
+  document.querySelectorAll('[data-i]').forEach(el => { el.textContent = t(el.dataset.i); });
+  $('#q').placeholder = t('ph');
+  if (MODELS.length) render();
+}
+$('#lang').onclick = () => {
+  lang = lang === 'en' ? 'zh' : 'en';
+  try { localStorage.setItem('lang', lang); } catch (e) {}
+  applyLang();
+};
+if (lang === 'en') applyLang();
+
+load();
+</script>
+</body>
+</html>

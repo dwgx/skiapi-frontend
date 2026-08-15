@@ -202,3 +202,32 @@ Active development. Version `0.0.0` (unversioned). Used against real deployments
 
 Files under `src/features/chat/` carry their own AGPL notices identifying the
 derived portions. The rest of the repository is authored by dwgx.
+
+---
+
+## Server-side web customizations / 线上代理层页面资产
+
+`sub2api` 是第三方镜像（不能改代码），主页/登录换肤/价格广场/控制台横幅这些
+页面改造全部在 **Caddy 代理层**实现，本仓库镜像这些线上资产（拉取自
+`143.20.230.62:/var/www/`，2026-08-15）。
+
+| 目录 | 线上位置 | 作用 | Caddy 机制 |
+|---|---|---|---|
+| `landing/` | `/var/www/skiapi-landing/` | 主页落地页（`/` 与 `/home` 的替换页） | `(landing)` snippet：handle + file_server |
+| `landing/history/` | 同目录 `.bak-*` | 主页 13 个历史版本（07-29 ~ 08-09） | — |
+| `auth-theme/` | `/var/www/skiapi-static/auth-theme.css` | 登录/注册/找回密码等 6 个认证页换肤（CSS 覆盖上游 Vue DOM） | `(html_inject)` replace 注入 `<link>` |
+| `model-plaza/` | `/var/www/skiapi-static/model-plaza.html` | 价格广场自建页 | — |
+| `model-plaza/history/` | 同目录 `.bak-*` | 2 个历史版本 | — |
+| `console-banner/` | `/var/www/skiapi-console/console-banner.js` | 控制台 ASCII 横幅（注入所有 HTML 页） | `handle /console-banner.js` + replace |
+| `web-assets/` | `/var/www/skiapi-static/` | 站点图标资源（favicon/logo/anthropic.svg） | 静态托管 |
+
+改动线上这些页面后，记得把对应文件同步回本目录再提交，保持镜像一致。
+
+### 部署机制要点（防止误伤）
+
+- `handle` 是终结性路由：命中后不再走 replace/reverse_proxy——`/chat` 和落地页
+  依赖这一点避免被注入横幅/缓冲。
+- `auth-theme.css` 锚点只用上游手写的 Tailwind 类（`.card-glass` 等），上游升级
+  可能打破选择器，失效时整体退回上游样式（注释里有关键选择器清单）。
+- `/chat` 智能对话页（React SPA）产物不入库（`dist-chat/` 已 gitignore），
+  由源码 `src/` 构建后部署。

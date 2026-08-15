@@ -1,0 +1,1266 @@
+/* ==========================================================================
+ * auth-theme.css — skiapi.dev 认证页（登录 / 注册 / 找回密码 / 重置密码 /
+ * 邮箱验证 / OAuth 回调）视觉覆盖层
+ *
+ * ⚠️ 这份文件是「用 CSS 覆盖别人的 DOM」——认证页是上游 sub2api 自带的 Vue
+ * SPA，我们没有它的源码，只能靠 Caddy 注入这一个 <link> 从外部改样式。
+ * 因此**上游任何一次升级都可能打破这里的选择器**。锚点全部只用两类：
+ *   1. 上游作者手写的 Tailwind 组件类（card-glass / input / btn / …）——
+ *      写在 .vue 源码里，不参与构建 hash；
+ *   2. Tailwind 原子类（min-h-screen / max-w-md / h-px …）——语义固定。
+ * 刻意不用 data-v-86388737 这类 scoped id：每次构建都变。
+ *
+ * 失效时的表现是「整体退回上游原样式」，不会出现半新半旧的坏样子——所有规则
+ * 共用同一个作用域前缀，共存亡。排查时先在 DevTools 里确认下面清单里的类还在。
+ *
+ * ⚠️ 另一个整体失效条件：**不支持 :has() 的浏览器**（Safari <15.4 /
+ * Chrome <105 / Firefox <121）。作用域前缀本身就用了 :has()，选择器整条不解析，
+ * 结果同样是干净地退回上游样式。这是刻意接受的取舍——:has() 是这里唯一能
+ * 「只命中认证页、不碰面板」的办法（见下面 min-h-screen 的说明）。
+ *
+ * ── 依赖的关键选择器清单（2026-08-06 逐个对线上 bundle 实测确认） ──────────
+ * 证据来源：https://skiapi.dev/login 返回的是 SPA 骨架，所以类名是从打包产物
+ * 里挖的 —— /assets/index-9X5IMa3Q.css 与 index.js 引用的全部 126 个 chunk。
+ *
+ * 作用域锚点（AuthLayout-*.js）
+ *   div.relative.flex.min-h-screen.items-center.justify-center.overflow-hidden.p-4
+ *   ├─ div  第1层：整块渐变底（bg-gradient-to-br，暗色走 dark-950）
+ *   ├─ div  第2层：pointer-events-none 装饰容器
+ *   │   ├─ div ×3  teal 光斑（bg-primary-400/20、500/15、300/10 + blur-3xl）
+ *   │   └─ div     teal 网格（bg-[linear-gradient(rgba(20,184,166,0.03)…)]）
+ *   └─ div.relative.z-10.w-full.max-w-md
+ *       ├─ div.mb-8.text-center
+ *       │   ├─ div.mb-4.inline-flex.h-16.w-16.rounded-2xl.shadow-primary-500/30
+ *       │   ├─ h1.text-gradient.mb-2.text-3xl.font-bold      站点名
+ *       │   └─ p.text-sm.text-gray-500                       副标题
+ *       ├─ div.card-glass.rounded-2xl.p-8.shadow-glass       ← 主卡（slot）
+ *       ├─ div.mt-6.text-center.text-sm                      ← footer slot
+ *       └─ div.mt-8.text-center.text-xs                      版权行
+ *
+ * 表单 / 控件（LoginView / RegisterView / ForgotPasswordView /
+ *              ResetPasswordView / PendingOAuthCreateAccountForm）
+ *   .input（含 `input pl-11 pr-11` 变体）· .input-label · .input-hint
+ *   .input-error · .btn · .btn-primary · .btn-secondary
+ *   input.h-12.w-10…text-lg          TOTP 六位验证码格
+ *   div.pointer-events-none.absolute.inset-y-0.left-0.pl-3.5   输入框左图标
+ *   button.absolute.inset-y-0.right-0.pr-3.5                   密码显隐按钮
+ *   a/button.font-medium.text-primary-600                      文字链接
+ *   div.h-px.flex-1.bg-gray-200                                「或」分隔线
+ *   div.rounded-xl.border-green-200/.border-amber-200.p-6      结果提示卡
+ *   div.h-12.w-12.rounded-full.bg-green-100/.bg-amber-100/.bg-primary-100
+ *   .animate-spin                                              加载圈
+ *   div.relative.w-full.max-w-md.rounded-xl.shadow-xl          弹窗面板
+ *   input[type=checkbox].h-4.w-4…text-primary-600              登录协议勾选框
+ *   button.rounded-xl.bg-primary-600（协议弹窗的确认键）
+ *
+ * ── 为什么作用域必须是 :has()，不能只写类名 ────────────────────────────────
+ * SPA 全部路由共用一个 index.html，登录后前端路由跳 /dashboard 页面不重载，
+ * 这份 CSS 仍在。所以作用域只能由 CSS 自己保证。实测（126 个 chunk 全下载后
+ * grep）：card-glass 只出现在 AuthLayout 一个 chunk 里，其余 125 个都没有；
+ * 而 min-h-screen 出现在 14 个 chunk（含 AppLayout / HomeView / ModelPlaza…），
+ * input / btn 更是面板里到处都有。因此裸写类名必然误伤面板，必须靠
+ * :has(> div > [class*="card-glass"]) 把范围钉死在认证页。
+ *
+ * ── 实测记录（2026-08-06，Playwright + 线上真实 DOM） ──────────────────────
+ * 做法：抓 https://skiapi.dev/login 渲染后的真实 DOM，摘掉线上旧 CSS 换成本地
+ * 这份，再读 computed style / 量盒子 / 驱动 hover+active / 逐像素采样截图。
+ *   · 本文件 83 条选择器：/login 上直接命中 48 条；9 条是亮色变体（已在
+ *     html:not(.dark) 上下文读数确认生效）；26 条属于当前配置到不了的状态
+ *     （OAuth 次按钮、TOTP 六格、校验失败、结果提示卡、协议勾选、弹窗），
+ *     用**从 bundle 原样复制的 class 串**注入真实卡片内部逐条确认生效。
+ *     没有一条是写了不生效的死规则。
+ *   · 按压实测：btn-primary / btn-secondary 的 transform 依次为
+ *     none → translateY(1px) → translateY(2px)，方向向下，无 scale。
+ *   · 泄漏实测：/model-plaza、/、/legal/terms 上作用域命中数均为 0
+ *     （/legal/terms 有 1 个 min-h-screen 但没有 card-glass，正确不命中）。
+ *   · 对比度：暗/亮两套全部过 AA（正文 4.5:1、渐变大标题 3:1）。
+ *
+ * 没验到的部分（诚实记录）：登录成功后的 /dashboard 等面板路由需要凭据，
+ * 只验证了公开路由的不泄漏；iOS Safari 的真机缩放行为只按规范给足 16px，
+ * 没有真机复验；autofill 配色依赖浏览器私有伪类，无法脚本触发。
+ *
+ * ── 视觉语言 ─────────────────────────────────────────────────────────────
+ * 取自 KiroStudio admin-ui 的 .card-metal / .card-metal-press /
+ * .text-gradient-brand：斜向 145deg 金属渐变 + 顶部 1px inset 高光 +
+ * 双层外阴影（近实 + 远柔），标题走 #0070f3 → #7928ca 渐变字。
+ * 交互一律「按压」：hover translateY(1px) 且阴影收敛，active 再沉 1px。
+ * 全文件没有一处负 translateY、没有一处 scale。
+ *
+ * 圆角比 admin-ui 的 --radius(6px) 稍大：登录卡是页面唯一的大面积容器，
+ * 6px 在 400px 宽的卡上会显得像没做圆角。控件 8px / 卡片 12px。
+ *
+ * 字体走系统栈。CSP 的 font-src 虽放行 fonts.gstatic.com，但登录页不该为字形
+ * 多打一个第三方请求（隐私面 + 可用性面）。
+ *
+ * 手机适配的两档断点、以及「iOS 输入框必须 ≥16px」的理由，见文件末尾那一节。
+ *
+ * 2026-08-06
+ * ========================================================================== */
+
+/* ── 设计 token ───────────────────────────────────────────────────────────
+ * 只挂在作用域容器上，不落 :root —— 避免泄漏到登录后的面板路由（SPA 不重载
+ * 页面，这份 CSS 在 /dashboard 上依然生效）。
+ * 默认值 = 暗色；亮色在紧随其后的 html:not(.dark) 块里整体覆盖。
+ * -------------------------------------------------------------------- */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) {
+	--ski-canvas: #0A0A0A;
+
+	/* 金属面：145deg 从左上亮到右下暗，模拟顶光打在斜面上 */
+	--ski-metal: linear-gradient(145deg, #1E1E20 0%, #171719 55%, #131315 100%);
+	--ski-metal-border: rgba(255, 255, 255, 0.06);
+	--ski-metal-highlight: rgba(255, 255, 255, 0.06);
+	--ski-metal-shadow:
+		inset 0 1px 0 var(--ski-metal-highlight),
+		0 1px 3px rgba(0, 0, 0, 0.4),
+		0 4px 12px rgba(0, 0, 0, 0.25);
+	/* 按下时外阴影收敛：卡片贴向桌面，不是变小 */
+	--ski-metal-shadow-press:
+		inset 0 1px 0 rgba(255, 255, 255, 0.04),
+		0 1px 1px rgba(0, 0, 0, 0.3),
+		0 1px 3px rgba(0, 0, 0, 0.18);
+
+	--ski-surface: #141414;
+	--ski-surface-raised: #1A1A1A;
+	--ski-border: #2E2E2E;
+	--ski-border-strong: #404040;
+
+	--ski-text: #EDEDED;
+	/* #888 在 #171719 卡面上 5.15:1，过 AA */
+	--ski-muted: #888888;
+	/* 版权行压在 --ski-canvas 上，#6E6E6E 只有 3.85:1，提到 #7E8286 → 5.09:1 */
+	--ski-subtle: #7E8286;
+
+	--ski-accent: #0070F3;
+	--ski-accent-bright: #3291FF;
+	--ski-accent-ink: #FFFFFF;
+	/* 链接在卡面上要过 4.5:1：#0070F3 只有 3.4:1，用 #3291FF → 5.77:1 */
+	--ski-link: #3291FF;
+	--ski-link-hover: #6BB0FF;
+	--ski-purple: #7928CA;
+	--ski-grad-brand: linear-gradient(135deg, #3291FF, #A855F7);
+
+	--ski-success: #50E3C2;
+	--ski-warn: #F5A623;
+	--ski-error: #FF4D4D;
+
+	--ski-r: 8px;
+	--ski-r-card: 12px;
+	/* admin-ui 的按压曲线 */
+	--ski-ease: cubic-bezier(0.16, 1, 0.3, 1);
+	--ski-dur: 180ms;
+
+	--ski-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans",
+		"Helvetica Neue", Arial, "PingFang SC", "Hiragino Sans GB",
+		"Microsoft YaHei", sans-serif;
+
+	background-color: var(--ski-canvas);
+	color: var(--ski-text);
+	font-family: var(--ski-font);
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+}
+
+/* 亮色：同一套金属逻辑，只是把「深色斜面」换成「拉丝铝斜面」——
+   145deg 依然从左上亮到右下暗，inset 高光改用近白，阴影整体减淡。 */
+html:not(.dark) [class*="min-h-screen"]:has(> div > [class*="card-glass"]) {
+	/* 比卡片面（#FFF→#EDEFF3）明显压暗一档。上一版给的 #F4F5F7 和卡面只差
+	   约 4% 亮度，实测截图里卡片几乎浮不出来 —— 金属卡靠的是「面比底亮」，
+	   底太白就没有厚度可言。 */
+	--ski-canvas: #E4E7EC;
+
+	--ski-metal: linear-gradient(145deg, #FFFFFF 0%, #F7F8FA 55%, #EDEFF3 100%);
+	--ski-metal-border: rgba(15, 23, 42, 0.10);
+	--ski-metal-highlight: rgba(255, 255, 255, 0.9);
+	--ski-metal-shadow:
+		inset 0 1px 0 var(--ski-metal-highlight),
+		0 1px 3px rgba(15, 23, 42, 0.10),
+		0 4px 12px rgba(15, 23, 42, 0.07);
+	--ski-metal-shadow-press:
+		inset 0 1px 0 rgba(255, 255, 255, 0.85),
+		0 1px 1px rgba(15, 23, 42, 0.09),
+		0 1px 3px rgba(15, 23, 42, 0.05);
+
+	--ski-surface: #FFFFFF;
+	--ski-surface-raised: #F7F8FA;
+	--ski-border: #DDE1E6;
+	--ski-border-strong: #C2C8D0;
+
+	--ski-text: #14161A;
+	/* #5A6069 在 #F7F8FA 上 6.0:1 */
+	--ski-muted: #5A6069;
+	--ski-subtle: #5F656E;
+
+	--ski-accent-bright: #0070F3;
+	/* 亮底上要更深才够对比：#0060D8 在 #F7F8FA 上 5.6:1 */
+	--ski-link: #0060D8;
+	--ski-link-hover: #0047A8;
+	--ski-grad-brand: linear-gradient(135deg, #0070F3, #7928CA);
+
+	/* 语义色在亮底上必须自己压暗：这三个值是按 4.5:1 反算出来的，不是挑好看的。
+	   实测上一版 #0E9E82 只有 3.17:1、#B26A00 只有 3.99:1，两个都不过 AA
+	   （提示文字是小字号，走 4.5:1 不是 3:1）。橙色尤其吃亏——色相本身亮度高，
+	   压到过线就已经偏棕了，这是没办法的取舍：可读性优先于色相好看。
+	   底色按卡面 #F7F8FA 算，不是按 canvas。 */
+	--ski-success: #0A7A64;
+	--ski-warn: #8A5200;
+	--ski-error: #D82C2C;
+}
+
+/* ── 环境背景 ─────────────────────────────────────────────────────────────
+ * 上游铺了 5 层装饰 div（1 层渐变底 + 3 个 teal 光斑 + 1 张 teal 网格）。
+ * 按位置接管，全部换成中性底 + 极淡的蓝/紫环境光。
+ * 用 :nth-child 而不是那些带 `/` `[` 的 Tailwind 任意值类名——后者在选择器里
+ * 要转义，容易写错且同样会随上游改动失效。
+ *
+ * 卡片现在是不透明金属面（不再是毛玻璃），所以背景光斑不需要「有东西可糊」，
+ * 一律压到很淡：金属卡靠自身渐变和阴影立体，背景越干净越显厚。
+ * -------------------------------------------------------------------- */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) > div:nth-child(1) {
+	background-image:
+		radial-gradient(ellipse 85% 50% at 50% -10%, rgba(0, 112, 243, 0.13), transparent 70%),
+		radial-gradient(ellipse 55% 45% at 88% 95%, rgba(121, 40, 202, 0.10), transparent 70%),
+		linear-gradient(180deg, #0E0E10 0%, #0B0B0C 45%, #090909 100%);
+}
+
+html:not(.dark) [class*="min-h-screen"]:has(> div > [class*="card-glass"]) > div:nth-child(1) {
+	background-image:
+		radial-gradient(ellipse 85% 50% at 50% -10%, rgba(0, 112, 243, 0.10), transparent 70%),
+		radial-gradient(ellipse 55% 45% at 88% 95%, rgba(121, 40, 202, 0.07), transparent 70%),
+		linear-gradient(180deg, #EDF0F4 0%, #E4E7EC 45%, #DCE0E7 100%);
+}
+
+/* 三个 teal 光斑 → 蓝/紫。第 3 个正好在卡片正后方（居中 h-96 w-96），
+   给得最淡，否则会从卡片边缘漏出一圈光晕、破坏金属边的锐利感。 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) > div:nth-child(2) > div:nth-child(1) {
+	background-color: rgba(50, 145, 255, 0.14);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) > div:nth-child(2) > div:nth-child(2) {
+	background-color: rgba(121, 40, 202, 0.13);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) > div:nth-child(2) > div:nth-child(3) {
+	background-color: rgba(0, 112, 243, 0.07);
+}
+
+/* 第 4 个子元素是 teal 网格；换成中性极淡网格 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) > div:nth-child(2) > div:nth-child(4) {
+	background-image:
+		linear-gradient(rgba(237, 237, 237, 0.022) 1px, transparent 1px),
+		linear-gradient(90deg, rgba(237, 237, 237, 0.022) 1px, transparent 1px);
+}
+
+html:not(.dark) [class*="min-h-screen"]:has(> div > [class*="card-glass"]) > div:nth-child(2) > div:nth-child(4) {
+	background-image:
+		linear-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+		linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px);
+}
+
+/* ── 品牌区 ──────────────────────────────────────────────────────────── */
+
+/* logo 方块：上游给的是 teal 光晕（shadow-primary-500/30）。
+   换成同一套金属面，让它和主卡是「同一块金属切下来的」。 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="rounded-2xl"][class*="h-16"] {
+	background: var(--ski-metal);
+	border: 1px solid var(--ski-metal-border);
+	border-radius: var(--ski-r-card);
+	box-shadow: var(--ski-metal-shadow);
+}
+
+/* 站点名：teal→slate 渐变字 换成 admin-ui 的 .text-gradient-brand 蓝→紫。
+ *
+ * width:fit-content 是这条规则的关键，不是随手加的：
+ * background-clip:text 是把渐变**按元素盒子**铺开再用字形裁切，不是按字形铺。
+ * h1 是块级元素、宽度撑满 448px 的卡片宽，而「SkiAPI」只有 86px 宽居中放着，
+ * 于是字形只落在渐变正中间那一小段 —— 实测逐像素采样：
+ *   0% #6577FB · 50% #6F72FB · 100% #746FFB，从头到尾同一个靛蓝，
+ * 完全看不出是渐变。收缩盒子到文字宽度后重测：
+ *   #355DAF → #4F83FD → #766EFA → #8B63F9，蓝→紫走完全程。
+ *
+ * 用 fit-content + margin auto 而不是 inline-block：改成 inline-block 会让 h1
+ * 变成行内级，和它上面那个 inline-flex 的 logo 方块**挤到同一行**（实测截图里
+ * logo 和站点名并排了）。fit-content 保持块级流，只收缩宽度。
+ *
+ * -webkit-text-fill-color 必须显式给 transparent —— 上游只写了 color，
+ * 在 Safari 里单靠 color 盖不住已经生效的 text-fill。
+ */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) h1[class*="text-gradient"] {
+	width: -moz-fit-content;
+	width: fit-content;
+	margin-left: auto;
+	margin-right: auto;
+	background-image: var(--ski-grad-brand);
+	-webkit-background-clip: text;
+	background-clip: text;
+	color: transparent;
+	-webkit-text-fill-color: transparent;
+	font-weight: 600;
+	letter-spacing: -0.02em;
+}
+
+/* ── 主卡：金属 ───────────────────────────────────────────────────────────
+ * 上游是 .card-glass（半透明 + backdrop-blur(24px)）。这里换成不透明金属面，
+ * 所以必须显式关掉 blur：--tw-backdrop-blur 是 Tailwind 拼 backdrop-filter 用
+ * 的变量，把它置为 blur(0) 比覆盖 backdrop-filter 更稳（上游那条 filter 是由
+ * 8 个变量拼出来的，硬覆盖整条属性以后上游若加新变量就对不上）。
+ * 用 background 简写而不是 background-image：要一并清掉 .card-glass 的
+ * background-color（#ffffffb3），否则半透明白底会压在渐变上面。
+ *
+ * 卡片本身不参与按压 —— 它不是可点元素，hover 位移会让整个表单跟着抖。
+ * 按压只给真正的可点元素（按钮）。
+ * -------------------------------------------------------------------- */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="card-glass"] {
+	--tw-backdrop-blur: blur(0);
+	background: var(--ski-metal);
+	border: 1px solid var(--ski-metal-border);
+	border-radius: var(--ski-r-card);
+	box-shadow: var(--ski-metal-shadow);
+}
+
+/* ── 文字 ────────────────────────────────────────────────────────────── */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) h2,
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) h3 {
+	color: var(--ski-text);
+	font-weight: 600;
+	letter-spacing: -0.01em;
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) p,
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) span {
+	color: var(--ski-muted);
+}
+
+/* 版权行：直接压在 canvas 上，不在卡里，单独给色 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) > div > div[class*="text-xs"]:last-child {
+	color: var(--ski-subtle);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="text-gray-400"],
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="dark:text-dark-500"] {
+	color: var(--ski-subtle);
+}
+
+/* 数字（TOTP 六位码、验证码倒计时）不能因字宽变化而抖 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input {
+	font-variant-numeric: tabular-nums;
+}
+
+/* ── 表单 ────────────────────────────────────────────────────────────── */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="input-label"] {
+	color: var(--ski-muted);
+	font-weight: 500;
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="input-hint"] {
+	color: var(--ski-subtle);
+}
+
+/* 输入框：金属面上的「凹槽」——顶部 inset 暗影 = 光照不到的凹陷内壁，
+   和卡片顶部的 inset 亮线正好相反，一凸一凹。 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input[class*="input"] {
+	background-color: var(--ski-surface);
+	background-image: none;
+	border: 1px solid var(--ski-border);
+	border-radius: var(--ski-r);
+	color: var(--ski-text);
+	box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.28);
+	/* 桌面端也保证 42px，和主按钮等高 */
+	min-height: 42px;
+	transition:
+		border-color var(--ski-dur) var(--ski-ease),
+		box-shadow var(--ski-dur) var(--ski-ease);
+}
+
+html:not(.dark) [class*="min-h-screen"]:has(> div > [class*="card-glass"]) input[class*="input"] {
+	background-color: #FFFFFF;
+	box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input::placeholder {
+	color: var(--ski-subtle);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input:hover:not(:focus) {
+	border-color: var(--ski-border-strong);
+}
+
+/* focus 环用 box-shadow 直接写死，不走 Tailwind 的 --tw-ring-* ——
+   上游 .input:focus 用 ring 变量拼 box-shadow，我们这条选择器特异度更高，
+   整条 box-shadow 覆盖掉即可，不必去改它的变量。 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input:focus,
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input:focus-visible {
+	outline: none;
+	border-color: var(--ski-accent-bright);
+	box-shadow:
+		inset 0 1px 2px rgba(0, 0, 0, 0.22),
+		0 0 0 3px rgba(0, 112, 243, 0.28);
+}
+
+/* 校验失败：上游只换 border-color，这里让 focus 环也跟着变红。
+   必须写成 input[class*="input-error"] 而不是裸的 [class*="input-error"] ——
+   上面那条 input[class*="input"] 是 (0,3,1)，裸写只有 (0,2,0) 会被它压掉，
+   实测红边根本不出现（读到的是 rgb(46,46,46) 中性边）。带上元素名凑到同样的
+   (0,3,1)，再靠「本条在后」取胜。 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input[class*="input-error"] {
+	border-color: var(--ski-error);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input[class*="input-error"]:focus {
+	border-color: var(--ski-error);
+	box-shadow:
+		inset 0 1px 2px rgba(0, 0, 0, 0.22),
+		0 0 0 3px rgba(255, 77, 77, 0.26);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input:disabled {
+	background-color: var(--ski-surface-raised);
+	opacity: 0.6;
+	cursor: not-allowed;
+}
+
+/* Chrome 自动填充会强行套浅黄底，用巨大的 inset shadow 盖掉。
+   注意这会顶掉上面的凹槽阴影 —— 无解，autofill 只认一条 -webkit-box-shadow。 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input:-webkit-autofill,
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input:-webkit-autofill:hover,
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input:-webkit-autofill:focus {
+	-webkit-text-fill-color: var(--ski-text);
+	-webkit-box-shadow: 0 0 0 1000px var(--ski-surface) inset;
+	caret-color: var(--ski-text);
+}
+
+html:not(.dark) [class*="min-h-screen"]:has(> div > [class*="card-glass"]) input:-webkit-autofill,
+html:not(.dark) [class*="min-h-screen"]:has(> div > [class*="card-glass"]) input:-webkit-autofill:hover,
+html:not(.dark) [class*="min-h-screen"]:has(> div > [class*="card-glass"]) input:-webkit-autofill:focus {
+	-webkit-box-shadow: 0 0 0 1000px #FFFFFF inset;
+}
+
+/* TOTP 六位验证码格（input.h-12.w-10…text-lg）：字号 18px，天然不触发 iOS 缩放 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input[class*="h-12"][class*="w-10"] {
+	background-color: var(--ski-surface);
+	border: 1px solid var(--ski-border-strong);
+	border-radius: var(--ski-r);
+	color: var(--ski-text);
+	box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.28);
+}
+
+html:not(.dark) [class*="min-h-screen"]:has(> div > [class*="card-glass"]) input[class*="h-12"][class*="w-10"] {
+	background-color: #FFFFFF;
+	box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+/* 输入框左侧的装饰图标 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="pointer-events-none"][class*="absolute"] svg {
+	color: var(--ski-subtle);
+}
+
+/* ── 按钮：按压交互 ───────────────────────────────────────────────────────
+ * 上游 .btn-primary 是 teal 横向渐变 + hover 抬起大阴影。这里改成 admin-ui 的
+ * .card-metal-press 逻辑：hover **下沉 1px 且阴影收敛**，active 再沉 1px。
+ * 绝不上浮（无负 translateY）、绝不 scale。
+ *
+ * 主按钮底色是 #0070F3 实心 + 一层很淡的纵向渐变（上亮下暗），这样它既是
+ * 页面唯一的高饱和面，又和周围金属件同一套光照方向。
+ * 白字压 #0070F3 = 4.53:1，过 AA。
+ * -------------------------------------------------------------------- */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="btn-primary"] {
+	background-color: var(--ski-accent);
+	background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0) 60%);
+	border: 1px solid rgba(0, 0, 0, 0.18);
+	border-radius: var(--ski-r);
+	color: var(--ski-accent-ink);
+	font-weight: 500;
+	min-height: 42px;
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.22),
+		0 1px 3px rgba(0, 0, 0, 0.4),
+		0 4px 12px rgba(0, 0, 0, 0.25);
+	transition:
+		transform var(--ski-dur) var(--ski-ease),
+		box-shadow var(--ski-dur) var(--ski-ease),
+		background-color var(--ski-dur) var(--ski-ease);
+}
+
+/* 排除 :disabled —— 禁用元素在 CSS 里**仍然匹配 :hover**，
+   不排除的话 loading 中的按钮会跟着手指沉下去。 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="btn-primary"]:hover:not(:disabled) {
+	transform: translateY(1px);
+	background-color: #0063DA;
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.18),
+		0 1px 2px rgba(0, 0, 0, 0.35),
+		0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="btn-primary"]:active:not(:disabled) {
+	transform: translateY(2px);
+	background-color: #0058C4;
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.12),
+		0 1px 1px rgba(0, 0, 0, 0.3),
+		0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="btn-primary"]:focus-visible {
+	outline: none;
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.22),
+		0 0 0 3px rgba(50, 145, 255, 0.45);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="btn"]:disabled {
+	transform: none;
+	opacity: 0.5;
+	cursor: not-allowed;
+	box-shadow: var(--ski-metal-shadow-press);
+}
+
+/* 次按钮（OAuth 登录、返回、切换验证方式）：直接就是一块金属 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="btn-secondary"] {
+	background: var(--ski-metal);
+	border: 1px solid var(--ski-metal-border);
+	border-radius: var(--ski-r);
+	color: var(--ski-text);
+	min-height: 42px;
+	box-shadow: var(--ski-metal-shadow);
+	transition:
+		transform var(--ski-dur) var(--ski-ease),
+		box-shadow var(--ski-dur) var(--ski-ease),
+		border-color var(--ski-dur) var(--ski-ease);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="btn-secondary"]:hover:not(:disabled) {
+	transform: translateY(1px);
+	border-color: var(--ski-border-strong);
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.05),
+		0 1px 2px rgba(0, 0, 0, 0.35),
+		0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="btn-secondary"]:active:not(:disabled) {
+	transform: translateY(2px);
+	box-shadow: var(--ski-metal-shadow-press);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="btn-secondary"]:focus-visible {
+	outline: none;
+	box-shadow:
+		inset 0 1px 0 var(--ski-metal-highlight),
+		0 0 0 3px rgba(50, 145, 255, 0.4);
+}
+
+/* 上游那两个手写的 bg-primary-600 小按钮（登录协议提示条 / 弹窗确认） */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="bg-primary-600"] {
+	background-color: var(--ski-accent);
+	transition:
+		transform var(--ski-dur) var(--ski-ease),
+		background-color var(--ski-dur) var(--ski-ease);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) button[class*="bg-primary-600"]:hover:not(:disabled) {
+	background-color: #0063DA;
+	transform: translateY(1px);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) button[class*="bg-primary-600"]:active:not(:disabled) {
+	transform: translateY(2px);
+}
+
+/* 密码显隐按钮（button.absolute.inset-y-0.right-0） */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) button[class*="absolute"][class*="inset-y-0"] {
+	color: var(--ski-subtle);
+	transition: color var(--ski-dur) var(--ski-ease);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) button[class*="absolute"][class*="inset-y-0"]:hover {
+	color: var(--ski-text);
+}
+
+/* 加载圈：上游用 border-b-2 + border-primary-500 画的，只有下边框有色 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="animate-spin"] {
+	border-bottom-color: var(--ski-accent-bright);
+	color: currentColor;
+}
+
+/* ── 链接 ─────────────────────────────────────────────────────────────────
+ * 链接**不做按压**：它们是正文行内元素（「还没有账号？立即注册」），
+ * 位移会把整行文字的基线带歪。只换色。
+ * -------------------------------------------------------------------- */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) a,
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="text-primary-600"],
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="text-primary-400"] {
+	color: var(--ski-link);
+	text-decoration: none;
+	transition: color var(--ski-dur) var(--ski-ease);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) a:hover,
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="text-primary-600"]:hover,
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="text-primary-400"]:hover {
+	color: var(--ski-link-hover);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) a:focus-visible {
+	outline: 2px solid var(--ski-accent-bright);
+	outline-offset: 2px;
+	border-radius: 3px;
+}
+
+/* 登录协议勾选框：accent-color 一行搞定原生控件着色，
+   比覆盖 Tailwind 那串 text-primary-600 / focus:ring-primary-500 可靠。
+   但 accent-color **只管勾选后的填充色**，未勾选时仍是浏览器默认的浅灰方块，
+   在暗色卡上是一块扎眼的亮斑（实测截图确认）。加 color-scheme:dark 让浏览器
+   用暗色画原生控件的未选态。只挂在 checkbox 上、不挂容器：挂容器会连带改掉
+   滚动条和其它原生控件的配色，副作用面太大。 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input[type="checkbox"] {
+	accent-color: var(--ski-accent);
+	color-scheme: dark;
+	cursor: pointer;
+}
+
+html:not(.dark) [class*="min-h-screen"]:has(> div > [class*="card-glass"]) input[type="checkbox"] {
+	color-scheme: light;
+}
+
+/* ── 分隔线（div.h-px.flex-1，「或」两侧） ─────────────────────────────── */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="h-px"][class*="flex-1"] {
+	background-color: var(--ski-border);
+}
+
+/* ── 结果提示卡（邮件已发送 / 链接已失效 / 注册须知） ──────────────────────
+ * 上游是 rounded-xl + border-green-200/amber-200 + bg-green-50/amber-50。
+ * 换成「淡色调 tonal 面」：底色只取 8% 透明度，靠边框和图标传达语义，
+ * 免得在金属卡里出现一块饱和的绿/黄补丁。
+ * -------------------------------------------------------------------- */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="border-green"] {
+	background-color: rgba(80, 227, 194, 0.08);
+	border-color: rgba(80, 227, 194, 0.30);
+	border-radius: var(--ski-r);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="border-amber"] {
+	background-color: rgba(245, 166, 35, 0.08);
+	border-color: rgba(245, 166, 35, 0.30);
+	border-radius: var(--ski-r);
+}
+
+/* 上游把语义色写成 text-green-600 / dark:text-green-400 等一堆档位，
+   这里用前缀匹配一网打尽（-4xx ~ -8xx）。 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="text-green-"] {
+	color: var(--ski-success);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="text-amber-"] {
+	color: var(--ski-warn);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="text-red-"] {
+	color: var(--ski-error);
+}
+
+/* 圆形图标底（h-12 w-12 rounded-full bg-green-100 / bg-amber-100 / bg-primary-100） */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="rounded-full"][class*="bg-green"] {
+	background-color: rgba(80, 227, 194, 0.14);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="rounded-full"][class*="bg-amber"] {
+	background-color: rgba(245, 166, 35, 0.14);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="rounded-full"][class*="bg-primary"] {
+	background-color: rgba(0, 112, 243, 0.14);
+}
+
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="rounded-full"][class*="bg-primary"] svg {
+	color: var(--ski-accent-bright);
+}
+
+/* 注册页那条「验证码已发送」浅绿条（bg-green-50 px-3 py-2） */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="bg-green-50"] {
+	background-color: rgba(80, 227, 194, 0.10);
+}
+
+/* ── 弹窗（TOTP 二次验证 / 登录协议）───────────────────────────────────────
+ * 上游没用 Teleport，弹窗仍在 .min-h-screen 子树里，所以作用域前缀命中它。
+ * 面板锚点用 shadow-xl 而不是 max-w-md —— 后者 AuthLayout 外层也有，会误伤。
+ * -------------------------------------------------------------------- */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="shadow-xl"][class*="rounded-xl"] {
+	background: var(--ski-metal);
+	border: 1px solid var(--ski-metal-border);
+	border-radius: var(--ski-r-card);
+	box-shadow:
+		inset 0 1px 0 var(--ski-metal-highlight),
+		0 8px 24px rgba(0, 0, 0, 0.5),
+		0 24px 60px rgba(0, 0, 0, 0.35);
+}
+
+/* 遮罩：上游 bg-black/50 在亮色下偏灰，压深一点让弹窗跳出来 */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="fixed"][class*="bg-black"] {
+	background-color: rgba(0, 0, 0, 0.62);
+}
+
+/* ── 选中态 ──────────────────────────────────────────────────────────── */
+[class*="min-h-screen"]:has(> div > [class*="card-glass"]) ::selection {
+	background-color: rgba(0, 112, 243, 0.35);
+	color: var(--ski-text);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * 手机适配
+ *
+ * 两档断点，各管一件事：
+ *   ≤640px（大手机横屏 / 小平板竖屏）——触控尺寸：所有可点元素 ≥44px，
+ *           输入框字号 ≥16px。
+ *   ≤430px（主流手机竖屏，iPhone 16 Pro Max 是 430）——空间压缩：
+ *           卡片内边距 32→20px，品牌区和页脚留白收紧。
+ *
+ * 卡片贴边：外层容器自带 Tailwind `p-4`（=16px），正好就是要求的 16px 边距，
+ * 所以**刻意不动它**，也不把卡片拉成满屏。这里只显式声明一遍作为保险 ——
+ * 上游哪天把 p-4 改成 p-0，卡片不会直接贴到屏幕边。
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 640px) {
+	/* iOS Safari 会在聚焦字号 <16px 的输入框时自动放大整个页面，
+	   放大后不会自动缩回，用户得手动双指缩放 —— 硬性要求 16px。
+	   上游 .input 是 .875rem(14px)，必须顶掉。 */
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input {
+		font-size: 16px;
+	}
+
+	/* 触控目标 ≥44px（WCAG 2.5.5 / Apple HIG 的 44pt） */
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input[class*="input"],
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="btn"] {
+		min-height: 44px;
+	}
+
+	/* 密码显隐按钮：上游只给了 pr-3.5，实际热区只有图标那么大。
+	   撑到 44px 宽并居中图标 —— 它是绝对定位在输入框右侧，
+	   高度由 inset-y-0 撑满（≥44px），只差宽度。 */
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) button[class*="absolute"][class*="inset-y-0"] {
+		min-width: 44px;
+		justify-content: center;
+		padding-right: 0;
+	}
+
+	/* 协议勾选框：上游 h-4 w-4(16px) 太小点不中。
+	   放大到 20px 并靠 padding 给出 44px 的可点范围（不改视觉尺寸太多）。 */
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input[type="checkbox"] {
+		width: 20px;
+		height: 20px;
+	}
+}
+
+/* 平板/触屏笔记本可能宽度 >640 但同样是触控 + 同样会缩放。
+   用 pointer:coarse 兜住这一类设备，不依赖宽度。 */
+@media (pointer: coarse) {
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input {
+		font-size: 16px;
+	}
+
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input[class*="input"],
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="btn"] {
+		min-height: 44px;
+	}
+
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) button[class*="absolute"][class*="inset-y-0"] {
+		min-width: 44px;
+		justify-content: center;
+		padding-right: 0;
+	}
+}
+
+@media (max-width: 430px) {
+	/* 外层 16px 边距的保险绳（见本节开头） */
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) {
+		padding: 16px;
+	}
+
+	/* p-8(32px) 在 430px 屏上吃掉 64px 宽度，压到 20px */
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="card-glass"] {
+		padding: 20px;
+		border-radius: 14px;
+	}
+
+	/* 品牌区 mb-8(32px) → 20px，页脚 mt-8 → 20px：小屏上竖向空间比留白值钱，
+	   注册页字段多，能少滚一屏是一屏 */
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) > div > div[class*="mb-8"] {
+		margin-bottom: 20px;
+	}
+
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) > div > div[class*="mt-8"] {
+		margin-top: 20px;
+	}
+
+	/* logo 从 64px 收到 52px */
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="rounded-2xl"][class*="h-16"] {
+		height: 52px;
+		width: 52px;
+		margin-bottom: 12px;
+	}
+
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) h1[class*="text-gradient"] {
+		font-size: 1.625rem;
+	}
+
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) h2 {
+		font-size: 1.375rem;
+	}
+
+	/* TOTP 六格：固定 w-10(40px)×6 + gap 共 280px，在 320px 屏上会溢出。
+	   改成等分收缩：flex 容器是上游的 .flex.justify-center.gap-2。
+	   高度守住 48px（已 >44px）。 */
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) input[class*="h-12"][class*="w-10"] {
+		width: auto;
+		min-width: 0;
+		flex: 1 1 0;
+		max-width: 48px;
+		padding-left: 0;
+		padding-right: 0;
+	}
+
+	/* 弹窗面板同样贴边 */
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="shadow-xl"][class*="rounded-xl"] {
+		padding: 20px;
+	}
+}
+
+/* ── 降低动效偏好 ─────────────────────────────────────────────────────────
+ * 本文件没有任何常驻动画（唯一的 animate-spin 来自上游，且只在请求进行中
+ * 挂载），所以这里只需要把按压位移和过渡关掉。
+ * -------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) *,
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) *::before,
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) *::after {
+		transition-duration: 1ms !important;
+		animation-duration: 1ms !important;
+	}
+
+	/* 必须带上 :not(:disabled)，否则压不住上面的按压规则：
+	   按压规则是 …[class*="btn-primary"]:hover:not(:disabled) = (0,5,0)，
+	   这里只写 :hover 是 (0,4,0)，而 @media **不增加特异度** ——
+	   实测（reducedMotion 上下文里驱动 hover/active）transform 依然是
+	   translateY(1px)/(2px)，降级根本没生效。语法检查发现不了这种问题。 */
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="btn"]:hover:not(:disabled),
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) [class*="btn"]:active:not(:disabled),
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) button[class*="bg-primary-600"]:hover:not(:disabled),
+	[class*="min-h-screen"]:has(> div > [class*="card-glass"]) button[class*="bg-primary-600"]:active:not(:disabled) {
+		transform: none;
+	}
+}
+
+/* ============================================================================
+   key-usage 主题覆盖 —— 让 /key-usage 与落地页/登录页/模型广场同一套配色
+   ----------------------------------------------------------------------------
+   ⚠️ 这是 **CSS 覆盖别人的 DOM**：/key-usage 是上游 sub2api 自己的 Vue SPA，
+   我们改不了它的源码（`latest` 标签升级会覆盖）。所以上游一旦改类名，
+   这里就会静默失效 —— 不会报错，只是配色回到青绿。排查入口见文末清单。
+
+   为什么需要它：上游主色是 teal `#14B8A6`（实测 Query 按钮
+   `rgb(20,184,166)`、暗色底 `#020617` slate-950），与本站的
+   admin-ui 蓝（`#0070F3` → `#7928CA`，canvas `#0A0A0A`）完全不是一套。
+   访客从落地页点「用量查询」过来会像进了另一个产品。
+
+   ── 作用域怎么定的（有实测依据，不是猜的）──
+   类名独特性统计（出现在几个打包 chunk 里，越少越安全）：
+       input-ring / progress-ring / pulse-dot / fade-up   2 个（KeyUsageView 独占）
+       bg-white/90                                        2 个（含 ProfileView，需作用域）
+       min-h-screen                                      15 个（单用必误伤）
+       btn-primary                                       47 个（单用必误伤）
+   所以锚点用 `input-ring`（与 auth-theme 的锚点 `card-glass` 同一档），
+   再用 `> header + main` 把结构钉死，比裸 `:has(input.input-ring)` 更难被凑巧命中。
+
+   实测命中数：/key-usage = 1；/ 、/login 、/model-plaza 、/legal/terms 、/home 全部 = 0。
+
+   ⚠️ **`:has()` 不能嵌套 `:has()`** —— `body:has(X:has(Y))` 直接
+   `SyntaxError: not a valid selector`（实测）。所以下面两个前缀各自独立写，
+   不能互相复用，看着重复是必要的。
+   ========================================================================= */
+
+/* 前缀 A：页内元素。全部规则都挂在它下面，漏不出这一页。 */
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"]) {
+  /* 本站配色令牌。与 auth-theme.css / 落地页 / 模型广场同源。 */
+  --kv-canvas: #0A0A0A;
+  --kv-surface: #141414;
+  --kv-raised: #1A1A1A;
+  --kv-border: #2E2E2E;
+  --kv-border-hi: #404040;
+  --kv-text: #EDEDED;
+  --kv-muted: #888888;
+  --kv-blue: #0070F3;
+  --kv-blue-lit: #3291FF;
+  --kv-purple: #7928CA;
+  --kv-ok: #50E3C2;
+  --kv-warn: #F5A623;
+  --kv-err: #FF4D4D;
+  --kv-ease: cubic-bezier(.16, 1, .3, 1);
+
+  background: var(--kv-canvas) !important;
+  color: var(--kv-text);
+}
+
+/* 亮色对偶。上游亮色底是 #F9FAFB，本站用 #FAFAFA —— 差别小但要统一，
+   否则从落地页跳过来时背景会跳一下。 */
+html:not(.dark) [class*="min-h-screen"]:has(> header + main input[class*="input-ring"]) {
+  --kv-canvas: #FAFAFA;
+  --kv-surface: #FFFFFF;
+  --kv-raised: #F4F4F5;
+  --kv-border: #E4E4E7;
+  --kv-border-hi: #C4C4C8;
+  --kv-text: #171717;
+  --kv-muted: #5A5A5A;
+  /* 亮色下 #0070F3 在白底上只有 3.5:1，做正文/链接过不了 4.5:1，压暗一档。
+     按钮底色仍可用原值（白字在 #0070F3 上是 4.6:1）。 */
+  --kv-blue: #0060D1;
+  --kv-blue-lit: #0070F3;
+  --kv-purple: #6D21B4;
+  --kv-ok: #0F9E86;
+  --kv-warn: #8A5200;
+  --kv-err: #DC2626;
+}
+
+/* ---- 输入卡：金属质感 --------------------------------------------------
+   与 admin-ui `.card-metal` 同一配方：斜向渐变模拟金属反光面 +
+   顶部 1px inset 高光（金属被顶光照到的锐边）+ 双层外阴影抬出厚度。
+   缺了 inset 高光就只是一块平贴色块，这是三件套里最容易被漏掉的一件。 */
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main [class*="bg-white/90"],
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main [class*="dark:bg-dark-900/90"] {
+  background: linear-gradient(145deg, #1E1E20 0%, #171719 55%, #131315 100%) !important;
+  border: 1px solid rgba(255, 255, 255, .06) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .06),
+    0 1px 3px rgba(0, 0, 0, .4),
+    0 4px 12px rgba(0, 0, 0, .25) !important;
+}
+html:not(.dark) [class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main [class*="bg-white/90"] {
+  background: linear-gradient(145deg, #FFFFFF 0%, #FAFAFB 55%, #F4F4F6 100%) !important;
+  border: 1px solid rgba(15, 23, 42, .08) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .9),
+    0 1px 2px rgba(15, 23, 42, .06),
+    0 4px 12px rgba(15, 23, 42, .05) !important;
+}
+
+/* ---- 标题：蓝→紫渐变文字 ----------------------------------------------
+   ⚠️ `width:fit-content` 是必需的，不是修饰。background-clip:text 按**元素盒子**
+   铺色，而字形只占盒子中间一段；元素若撑满容器宽度，取到的就是渐变中段 ——
+   渲染成一个纯色，看不出是渐变。auth-theme 上真实踩过这个坑（448px 的盒子里
+   字形只占 86px，结果整个标题是纯靛蓝）。 */
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"]) main h1,
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"]) main h2 {
+  background: linear-gradient(135deg, var(--kv-blue) 0%, var(--kv-purple) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  width: fit-content;
+  margin-inline: auto;
+  font-weight: 600;
+}
+
+/* ---- 输入框 ------------------------------------------------------------
+   font-size 16px 是**硬要求**不是审美：iOS Safari 对 <16px 的输入框在聚焦时
+   会自动放大整页，用户得手动缩回去。上游给的是 14px（实测）。 */
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  input[class*="input-ring"] {
+  font-size: 16px !important;
+  min-height: 48px;
+  background: var(--kv-surface) !important;
+  border: 1px solid var(--kv-border) !important;
+  color: var(--kv-text) !important;
+  border-radius: 10px !important;
+  transition: border-color 180ms var(--kv-ease), box-shadow 180ms var(--kv-ease);
+}
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  input[class*="input-ring"]:hover {
+  border-color: var(--kv-border-hi) !important;
+}
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  input[class*="input-ring"]:focus {
+  border-color: var(--kv-blue-lit) !important;
+  box-shadow: 0 0 0 3px rgba(0, 112, 243, .18) !important;
+  outline: none !important;
+}
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  input[class*="input-ring"]::placeholder {
+  color: var(--kv-muted) !important;
+}
+
+/* ---- 主按钮：teal → 本站蓝，且交互改按压 -------------------------------
+   上游实测 `rgb(20,184,166)`（teal-500）配 `active:scale-[0.97]`。
+   两件都要换：配色不是一套，而 scale 违反本站规矩
+   （admin-ui `.card-metal-press` 原注释：「绝不 scale、绝不上浮」）。
+   按压 = hover 沉 1px + 阴影收敛，active 再沉 1px。 */
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main button[class*="h-12"][class*="px-7"] {
+  background: var(--kv-blue) !important;
+  border: 1px solid rgba(255, 255, 255, .1) !important;
+  color: #fff !important;
+  border-radius: 10px !important;
+  min-height: 48px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .12),
+    0 1px 3px rgba(0, 0, 0, .35),
+    0 4px 12px rgba(0, 112, 243, .18) !important;
+  transform: none !important;
+  transition:
+    transform 180ms var(--kv-ease),
+    box-shadow 180ms var(--kv-ease),
+    background 180ms var(--kv-ease) !important;
+}
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main button[class*="h-12"][class*="px-7"]:hover:not(:disabled) {
+  background: var(--kv-blue-lit) !important;
+  transform: translateY(1px) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .1),
+    0 1px 2px rgba(0, 0, 0, .3) !important;
+}
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main button[class*="h-12"][class*="px-7"]:active:not(:disabled) {
+  transform: translateY(2px) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .08),
+    0 1px 1px rgba(0, 0, 0, .28) !important;
+}
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main button[class*="h-12"][class*="px-7"]:disabled {
+  background: var(--kv-raised) !important;
+  color: var(--kv-muted) !important;
+  cursor: not-allowed !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+/* focus-visible：键盘可达的硬要求。
+   ⚠️ 用 box-shadow 而不是 outline —— 圆角元素上 outline 在部分浏览器不跟圆角。
+   但 box-shadow 会被上面那些 !important 的 box-shadow 覆盖，所以这里也得 !important
+   且写在后面。这正是 auth-theme 踩过的权重坑的同一类。 */
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main button:focus-visible,
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main input:focus-visible,
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main a:focus-visible {
+  outline: 2px solid var(--kv-blue-lit) !important;
+  outline-offset: 2px !important;
+}
+
+/* ---- 进度环 / 脉冲点 / 骨架屏：都从 teal 换成蓝 ------------------------
+   ⚠️ `.skeleton` 全局 CSS 里也有一套（`index-*.css` 里的 `.skeleton{…#e5e7eb}`），
+   那套是给面板别处用的、是对的。所以这里**必须**带作用域前缀，
+   否则会把整个后台的骨架屏一起改掉。 */
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  [class*="progress-ring"] { color: var(--kv-blue-lit); }
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  [class*="pulse-dot"] { background: var(--kv-ok) !important; }
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  [class*="skeleton"] { background-color: var(--kv-raised) !important; }
+
+/* 环的渐变 stop（SVG 里用 ring-grad- 前缀的 linearGradient） */
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  svg [id^="ring-grad-"] stop:first-child { stop-color: var(--kv-blue); }
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  svg [id^="ring-grad-"] stop:last-child { stop-color: var(--kv-purple); }
+
+/* 数字一律等宽，跳变时不左右抖 */
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main [class*="tabular-nums"],
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main [class*="font-mono"] {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* ---- 空状态的输入区也要有卡 --------------------------------------------
+   实测：`bg-white/90` 那张卡是**查询成功后**才渲染的结果卡；
+   空状态下输入框与按钮是裸在 `div.max-w-xl > div.flex.gap-3` 里的，
+   没有任何容器 —— 而空状态正是访客第一眼看到的东西。
+   所以给 `max-w-xl` 那层补一张卡。它在打包产物里出现 2 次
+   （KeyUsageView.js + index.css），带作用域前缀后是安全的。 */
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main [class*="max-w-xl"]:has(input[class*="input-ring"]) {
+  background: linear-gradient(145deg, #1E1E20 0%, #171719 55%, #131315 100%);
+  border: 1px solid rgba(255, 255, 255, .06);
+  border-radius: 14px;
+  padding: 22px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .06),
+    0 1px 3px rgba(0, 0, 0, .4),
+    0 4px 12px rgba(0, 0, 0, .25);
+}
+html:not(.dark) [class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main [class*="max-w-xl"]:has(input[class*="input-ring"]) {
+  background: linear-gradient(145deg, #FFFFFF 0%, #FAFAFB 55%, #F4F4F6 100%);
+  border: 1px solid rgba(15, 23, 42, .08);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .9),
+    0 1px 2px rgba(15, 23, 42, .06),
+    0 4px 12px rgba(15, 23, 42, .05);
+}
+
+/* 上游按钮实际类名是 bg-primary-500（teal），且带 active:scale-[0.97]。
+   前面按 h-12/px-7 命中已生效，这里再按 bg-primary-500 兜一道 ——
+   上游若改了尺寸类名，配色仍能保住。 */
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main button[class*="bg-primary-"] {
+  background: var(--kv-blue) !important;
+}
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main button[class*="bg-primary-"]:hover:not(:disabled) {
+  background: var(--kv-blue-lit) !important;
+}
+
+/* ---- Teleport 到 body 的 toast ----------------------------------------
+   Vue 的 toast 用 Teleport 挂到 body 下，跳出了 main 的层级，
+   所以前缀 A 管不到它，必须用前缀 B。
+   ⚠️ 前缀 B 不能写成 `body:has(前缀A)` —— :has() 不能嵌套 :has()，
+   实测直接 SyntaxError。所以这里把条件重写一遍。 */
+body:has(#app [class*="min-h-screen"] input[class*="input-ring"])
+  [class*="fixed"][class*="z-"] [class*="border-green"] {
+  border-color: rgba(80, 227, 194, .4) !important;
+}
+body:has(#app [class*="min-h-screen"] input[class*="input-ring"])
+  [class*="fixed"][class*="z-"] [class*="border-red"] {
+  border-color: rgba(255, 77, 77, .4) !important;
+}
+
+/* ---- 手机适配 ----------------------------------------------------------
+   ≤430px：卡片留 16px 边距而不是满屏贴边（满屏会让圆角失去意义）、
+   按钮与输入框各占一行、所有可点元素 ≥44px。 */
+@media (max-width: 640px) {
+  [class*="min-h-screen"]:has(> header + main input[class*="input-ring"]) main {
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+  }
+  /* ⚠️ 必须命中「装着输入框和按钮的那一行」，不是输入框的直接父级。
+     真实结构：div.flex.gap-3 > div.flex-1.relative > input.input-ring
+                └ 这一层才是行            └ 这层只包输入框
+     写成 `:has(> input)` 会命中内层的 div.flex-1，把它改成 column，
+     而外层仍是横排 —— 实测结果是输入框被挤成零宽，只剩两个图标并排。
+     所以用 `:has(input)`（后代，非直接子）并同时要求它含 button。 */
+  [class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+    main [class*="flex"][class*="gap-"]:has(input[class*="input-ring"]):has(button) {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 10px !important;
+  }
+  /* 输入框那层要能撑满，否则 column 下它仍按内容宽度收缩 */
+  [class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+    main [class*="flex-1"]:has(> input[class*="input-ring"]) {
+    width: 100% !important;
+  }
+  [class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+    main button[class*="h-12"][class*="px-7"] {
+    width: 100% !important;
+  }
+}
+@media (max-width: 430px) {
+  [class*="min-h-screen"]:has(> header + main input[class*="input-ring"]) main h1 {
+    font-size: 1.6rem !important;
+    line-height: 1.25 !important;
+  }
+}
+
+/* ---- 表格：小屏横向滚动并锁首列 --------------------------------------- */
+@media (max-width: 900px) {
+  [class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+    main table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  [class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+    main table tbody th:first-child,
+  [class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+    main table thead th:first-child {
+    position: sticky;
+    left: 0;
+    background: var(--kv-surface);
+    z-index: 1;
+  }
+}
+
+/* ---- 无障碍：尊重系统「减少动态效果」 ---------------------------------
+   ⚠️ `@media` **不增加选择器权重**。上面那些规则带 !important，
+   所以这里也必须带 !important，否则写了等于没写 —— 这个坑在
+   auth-theme.css 上真实发生过（reduced-motion 兜底完全没生效，
+   按压位移照样在触发，只有用 computed style 才能发现）。 */
+@media (prefers-reduced-motion: reduce) {
+  [class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+    main button[class*="h-12"][class*="px-7"],
+  [class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+    main button[class*="h-12"][class*="px-7"]:hover:not(:disabled),
+  [class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+    main button[class*="h-12"][class*="px-7"]:active:not(:disabled) {
+    transform: none !important;
+    transition: none !important;
+  }
+  [class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+    [class*="pulse-dot"],
+  [class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+    [class*="skeleton"],
+  [class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+    [class*="fade-up"] {
+    animation: none !important;
+  }
+}
+
+/* ---- 点击区补足 44×44（WCAG 2.5.8）------------------------------------
+   实测 /key-usage 上有四个不达标的：语言切换 54×36、主题切换 36×36、
+   密码显隐 20×20、GitHub 链接 45×20。
+
+   前三个是**独立控件**，必须修。GitHub 那个是页脚文字链接，
+   WCAG 2.5.8 对行内 prose 链接有例外，不动。
+
+   用伪元素扩命中区而**不是**加 width/height —— 后者会把 header 撑变形。
+   ⚠️ 若上游给这些按钮用过 ::after（做角标之类），这里会覆盖掉它。
+   实测当前没有，但上游升级后要重查。 */
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"]) header button,
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"]) header a[class*="rounded"] {
+  position: relative;
+}
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"]) header button::after,
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"]) header a[class*="rounded"]::after {
+  content: '';
+  position: absolute;
+  /* 36px 的控件补到 44：上下各扩 4px。取 -5px 留一点余量。 */
+  inset: -5px;
+  /* 不参与布局、不画任何东西，只接指针事件 */
+  border-radius: inherit;
+}
+
+/* 密码显隐按钮 20×20 → 命中区 44×44。它在输入框内部绝对定位，
+   扩 12px 即可，再大会盖住输入框的可点区域（用户想点输入框却点到了显隐）。 */
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main button[class*="absolute"][class*="right-4"] {
+  position: absolute;
+}
+[class*="min-h-screen"]:has(> header + main input[class*="input-ring"])
+  main button[class*="absolute"][class*="right-4"]::after {
+  content: '';
+  position: absolute;
+  inset: -12px;
+  border-radius: 50%;
+}
+
+/* ============================================================================
+   依赖的选择器清单（上游升级后从这里逐个查）
+   ----------------------------------------------------------------------------
+   作用域锚点   input[class*="input-ring"]      ← 最关键，丢了整个文件失效
+   结构约束     > header + main                  ← 上游改布局层级会失效
+   卡面         bg-white/90 · dark:bg-dark-900/90
+   主按钮       button.h-12.px-7                 ← 上游改尺寸类名会失效
+   进度环       progress-ring · svg [id^=ring-grad-]
+   脉冲点       pulse-dot
+   骨架屏       skeleton（**必须带作用域**，全局另有一套给面板用）
+   入场动画     fade-up · fade-up-delay-*
+   toast        [class*=fixed][class*=z-] 下的 border-green / border-red
+
+   自查命令：
+     curl -s https://skiapi.dev/key-usage | grep -o 'assets/[A-Za-z0-9-]*\.js'
+     然后拉下 KeyUsageView 那个 chunk，grep 上面这些串还在不在。
+   ========================================================================= */

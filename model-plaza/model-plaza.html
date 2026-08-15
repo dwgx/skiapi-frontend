@@ -1,0 +1,1497 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/png" href="/favicon.png">
+<title>模型广场 — SkiAPI</title>
+<style>
+/* ============================================================================
+   模型广场
+   ----------------------------------------------------------------------------
+   骨架（三列价格网格、卡片手法、sticky 侧栏、compact table）来自
+   dwgx/skiapi-frontend 的 src/pages/Pricing.jsx 移植版，**不是** sub2api 自带
+   那套 8 列宽表；数据层适配到本站 /api/v1/model-plaza。
+
+   配色与交互已经从原件的紫色 M3 换成 KiroStudio admin-ui 的语言：
+   蓝 #0070F3 / #3291FF 主调、品牌渐变 blue→purple、卡片交互从"上浮"改成
+   "按压"（admin-ui 的硬规矩：hover 下沉 1px + 阴影收敛，绝不上浮、绝不 scale）。
+
+   被迫偏离原件的三处，各自注明：
+   1. Geist / Geist Mono 换系统栈 —— 应用下发的 CSP 只放行 'self'，webfont
+      外链会被拦，内嵌字体文件又让单文件体积翻倍。
+   2. 原件字段是 model_ratio / completion_ratio / model_price / quota_per_unit，
+      本站接口是 groups[].models[].pricing 与 official_pricing，所以筛选维度
+      从"厂商 + 分组"改成"分组 + 由模型名推导厂商"。
+   3. 原件 VendorIcon 依赖外部图片资源，CSP 只放行 'self'，所以品牌标记全部
+      内联成 SVG（见文末 VENDOR_ICONS，取自 lobehub/lobe-icons）。拿不到内联
+      表时退化成品牌色首字母块，不让页面开天窗。
+   ========================================================================= */
+
+/* ---- 色板：KiroStudio admin-ui src/index.css 的档位 ----------------------
+   canvas #0a0a0a、surface #141414 / #1a1a1a / #222、border #2e2e2e→#404040、
+   text #ededed / #888888、blue #0070f3、purple #7928ca、green #50e3c2、
+   yellow #f5a623。
+
+   两处按对比度做了微调，理由写在这，别当成抄错：
+   - --muted / --subtle 取 #A6A6A6 / #8E8E8E 而不是直接用 admin-ui 的
+     #888888 / #666666。这一页的次级文字承载**价格**（官方价、缓存价、
+     每行单位），#666666 在 #1a1a1a 上只有 2.7:1，#888888 在 #222 上 3.97:1，
+     都过不了 4.5:1。admin-ui 那两级是给装饰性文字用的，这里不是。
+   - 亮色的 accent 压到 #0060DF：#0070F3 在纯白上 3.9:1，做正文色不够。 */
+:root{
+  --canvas:#0A0A0A; --surface:#141414; --raised:#1A1A1A;
+  --hover:#1F1F1F; --border:#2E2E2E;
+  --text:#EDEDED; --muted:#A6A6A6; --subtle:#8E8E8E;
+  --accent:#3291FF; --accent-dim:#0070F3;
+  --brand-purple:#7928CA;
+  --grad:linear-gradient(135deg,#0070F3,#7928CA);
+  /* 渐变里的 #7928CA 拿来当前景色只有 2.7:1（非文字图形要 3:1），所以前景用的紫
+     单开一个档位；#7928CA 只出现在渐变/底色里，那里不受对比度门槛约束。 */
+  --purple-ink:#A855F7;
+  --success:#50E3C2; --warn:#F5A623; --error:#FF4D4D;
+  /* 原件的 M3 缓动与时长梯度 */
+  --ease:cubic-bezier(0.2,0,0,1);
+  /* 按压交互专用曲线与阴影梯度，取自 admin-ui 的 .card-metal-press */
+  --ease-press:cubic-bezier(0.16,1,0.3,1);
+  --sh-rest:0 1px 3px rgba(0,0,0,.4),0 4px 12px rgba(0,0,0,.25);
+  --sh-hover:0 1px 2px rgba(0,0,0,.35),0 2px 6px rgba(0,0,0,.2);
+  --sh-active:0 1px 1px rgba(0,0,0,.3),0 1px 3px rgba(0,0,0,.18);
+  --d-micro:100ms; --d-short:200ms; --d-med:300ms;
+  --r:12px;
+  /* 毛玻璃三件套：半透明底 + blur + 1px 半透明描边。深浅色各一组。 */
+  --glass:color-mix(in srgb,var(--surface) 58%,transparent);
+  --glass-strong:color-mix(in srgb,var(--surface) 74%,transparent);
+  --glass-line:color-mix(in srgb,var(--text) 9%,transparent);
+  --blur:blur(16px) saturate(140%);
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+/* 亮色：admin-ui 只有暗色一套，所以这里是把同一组色相压到亮底上。
+   accent 用 #0060DF（白底 5.6:1），success/warn 也各自压深 —— #50E3C2 与
+   #F5A623 在白底上分别只有 1.6:1 / 2.2:1，直接搬过来是读不出来的。 */
+html.light{
+  --canvas:#F7F8FA; --surface:#FFFFFF; --raised:#F2F3F5;
+  --hover:#F0F2F5; --border:#E2E4E9;
+  --text:#101216; --muted:#54585F; --subtle:#6B6F76;
+  --accent:#0060DF; --accent-dim:#0050BB;
+  --brand-purple:#6B21A8;
+  --purple-ink:#6B21A8;
+  --grad:linear-gradient(135deg,#0060DF,#6B21A8);
+  /* success 压到 #086252：折扣徽章的底是 success 16% 掺白，#0E8A72 在那片淡绿底上
+     只有 3.5:1，表格里的折扣数字也只有 4.0:1。#086252 分别是 5.7:1 / 6.9:1。 */
+  --success:#086252; --warn:#A66200; --error:#D01414;
+  --sh-rest:0 1px 3px rgba(16,18,22,.08),0 4px 12px rgba(16,18,22,.06);
+  --sh-hover:0 1px 2px rgba(16,18,22,.09),0 2px 6px rgba(16,18,22,.05);
+  --sh-active:0 1px 1px rgba(16,18,22,.08),0 1px 3px rgba(16,18,22,.04);
+  --glass:color-mix(in srgb,var(--surface) 62%,transparent);
+  --glass-strong:color-mix(in srgb,var(--surface) 80%,transparent);
+  --glass-line:color-mix(in srgb,#000 8%,transparent);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+/* 画布背景的两团极淡辉光：毛玻璃要有东西可透，纯平底色下 blur 看不出来。
+   刻意画在 body 的 background 上、随页面滚动 —— 早先写成 position:fixed;z-index:-1
+   的伪元素，被十几层 backdrop-filter 反复采样，Chromium 的合成器直接卡死：
+   JS 照常跑，但任何截图请求（Playwright 与 CDP 都试过）永不返回。 */
+body{color:var(--text);font-family:var(--sans);
+  line-height:1.6;-webkit-font-smoothing:antialiased;
+  background:
+    radial-gradient(52rem 30rem at 12% -6%,color-mix(in srgb,var(--accent-dim) 15%,transparent),transparent 70%),
+    radial-gradient(44rem 26rem at 92% 2%,color-mix(in srgb,var(--brand-purple) 13%,transparent),transparent 72%),
+    var(--canvas);
+  background-repeat:no-repeat}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* 毛玻璃工具类。@supports 兜底：不支持 backdrop-filter 时换成实底，
+   否则半透明底叠在辉光上会糊得读不了字。 */
+.glass{background:var(--glass);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+  border:1px solid var(--glass-line)}
+@supports not (backdrop-filter:blur(1px)){
+  .glass,.top,.side-in,.pill,.chip,.px{background:var(--surface)!important;
+    border-color:var(--border)!important}
+  .card:hover{background:var(--raised)!important}
+}
+
+/* 入场动画。**只动 opacity，不动 transform** —— 这里踩过一个坑：
+   原本是 `from{transform:translateY(12px)} to{transform:none}`，配上 .card 的
+   `animation:… both`。CSS 级联里动画声明压过普通声明，所以动画结束后 `both`
+   把 transform 永久钉在 to{} 的 `none` 上，`.card:hover{transform:translateY(1px)}`
+   **完全不生效**（实测 hover 后 computed transform 仍是单位矩阵）。
+   位移交给 :hover 的按压用，入场只留淡入，两者就不再抢同一个属性。 */
+@keyframes pricingFadeUp{from{opacity:0}to{opacity:1}}
+
+/* ---- 顶栏 ---------------------------------------------------------------- */
+.top{position:sticky;top:0;z-index:40;
+  background:color-mix(in srgb,var(--canvas) 72%,transparent);
+  backdrop-filter:blur(14px) saturate(150%);-webkit-backdrop-filter:blur(14px) saturate(150%);
+  border-bottom:1px solid var(--glass-line)}
+/* 品牌渐变（blue→purple）就落在这一条 2px 上：它是纯装饰、不承载文字，
+   所以渐变里那支低对比度的紫放这儿没有可读性问题。 */
+.top::after{content:'';position:absolute;left:0;right:0;bottom:-1px;height:2px;
+  background:var(--grad)}
+.top-in{max-width:1440px;margin:0 auto;padding:0 24px;height:56px;
+  display:flex;align-items:center;gap:14px}
+.brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:15px}
+.brand img{width:24px;height:24px;border-radius:6px}
+.top-sp{flex:1}
+.ibtn{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+  color:var(--muted);transition:background var(--d-short) var(--ease),color var(--d-short) var(--ease)}
+.ibtn:hover{background:var(--hover);color:var(--text)}
+/* 按压而非缩放：admin-ui 的硬规矩，全页无 scale、无 translateY 负值 */
+.ibtn:active{transform:translateY(1px)}
+.ibtn svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
+.back{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);
+  padding:6px 11px;border-radius:9px;transition:background var(--d-short) var(--ease),color var(--d-short) var(--ease)}
+.back:hover{background:var(--hover);color:var(--text)}
+.back svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
+@media (max-width:560px){.back span{display:none}}
+
+/* ---- hero ---------------------------------------------------------------- */
+.wrap{max-width:1440px;margin:0 auto;padding:0 24px}
+.hero{padding:34px 0 20px}
+.hero h1{font-size:clamp(1.6rem,3.4vw,2.1rem);font-weight:800;letter-spacing:-.025em;line-height:1.15}
+/* 表头那行「43 个模型 · 本站价与官方价并列」——个数由数据算出，不写死 */
+.tally{margin-top:9px;display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+  font-size:14px;color:var(--muted)}
+.tally b{font-weight:800;color:var(--text);font-variant-numeric:tabular-nums;
+  font-size:15px;letter-spacing:-.01em}
+.tally .sep{color:var(--subtle)}
+.tally em{font-style:normal;color:var(--accent);font-weight:600}
+.hero p{color:var(--muted);font-size:13.5px;margin-top:7px;max-width:62ch}
+.hero-desc{margin-top:12px;padding:11px 14px;border-radius:var(--r);
+  font-size:13px;color:var(--muted);white-space:pre-line}
+
+/* 统计卡：原件 StatCard 的 alpha(color,.08) 底 + alpha(color,.12) 边 */
+.stats{display:flex;gap:11px;flex-wrap:wrap;margin-top:16px}
+.stat{display:flex;align-items:center;gap:12px;padding:12px 20px;border-radius:14px;
+  flex:1;min-width:160px;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.stat-ic{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;flex:none}
+.stat-ic svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
+.stat b{display:block;font-weight:800;font-size:1.1rem;line-height:1.1;
+  font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.stat span{font-size:.68rem;color:var(--muted)}
+
+/* 厂商 pill：骨架取自原件 VendorPill，但交互换成按压（原件是 hover 上浮 1px
+   + active scale(.97)，两条都违反 admin-ui 的规矩） */
+.pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+.pill{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:20px;
+  border:1.5px solid var(--glass-line);background:var(--glass);
+  backdrop-filter:blur(10px) saturate(140%);-webkit-backdrop-filter:blur(10px) saturate(140%);
+  transition:transform var(--d-short) var(--ease),border-color var(--d-short) var(--ease),
+    background var(--d-short) var(--ease),box-shadow var(--d-short) var(--ease)}
+.pill:hover{transform:translateY(1px);box-shadow:var(--sh-hover)}
+.pill:active{transform:translateY(2px);box-shadow:var(--sh-active)}
+/* 品牌标记：SVG 用 currentColor，靠 color 上品牌色；退化成首字母时才需要底色块 */
+.pill-dot{width:18px;height:18px;display:grid;place-items:center;flex:none;
+  font-size:9.5px;font-weight:800;color:var(--vc)}
+.pill-dot svg{display:block;width:100%;height:100%}
+.pill-dot.mono{border-radius:5px;color:#fff}
+.pill-n{font-size:.76rem;font-weight:500}
+.pill[aria-pressed="true"] .pill-n{font-weight:700}
+.pill-c{padding:1px 5px;border-radius:5px;font-size:.6rem;font-weight:700;
+  background:color-mix(in srgb,var(--text) 6%,transparent);color:var(--muted);
+  font-variant-numeric:tabular-nums}
+
+/* ---- 主体：sticky 240px 侧栏 + 内容（原件的骨架） ---------------------- */
+/* minmax(0,1fr) 而不是 1fr：1fr 的最小值是 auto，表格视图那张 10 列宽表会把
+   轨道顶到自己的 min-content（实测 390px 视口下轨道被撑到 853px），于是整页横向
+   滚动，而不是 .tbl-wrap 自己内部滚。加了 minmax(0,…) 才轮到 overflow:auto 生效。 */
+.main{display:grid;grid-template-columns:240px minmax(0,1fr);gap:26px;padding:22px 0 60px}
+/* 轨道用 minmax(0,…) 之外，网格项自己也要 min-width:0 —— 项的自动最小尺寸同样是
+   min-content，只改轨道的话项照样会顶出去。两处都改了 overflow:auto 才真正生效。 */
+.main>*{min-width:0}
+.side{position:sticky;top:76px;align-self:start;max-height:calc(100vh - 96px);
+  overflow-y:auto;scrollbar-width:thin}
+/* 侧栏整块做成一片毛玻璃 —— 它 sticky 停在内容上方，是毛玻璃最自然的落点 */
+.side-in{padding:14px;border-radius:14px;background:var(--glass);
+  backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+  border:1px solid var(--glass-line)}
+.fsec{margin-bottom:18px}
+.fsec:last-child{margin-bottom:0}
+.fsec-t{font-weight:700;font-size:.72rem;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.08em;margin-bottom:8px;display:block}
+.chips{display:flex;flex-wrap:wrap;gap:4px}
+/* 原件 FilterChip：label + ratio 徽章 + count 徽章 */
+/* chip 也不单独加模糊：它嵌在已经是毛玻璃的 .side-in 里，父层已经把背后糊过一遍，
+   再叠一层只是重复开销。半透明底 + 描边就够读出玻璃感。 */
+.chip{display:inline-flex;align-items:center;gap:4px;padding:3.5px 10px;border-radius:9px;
+  border:1px solid color-mix(in srgb,var(--border) 60%,transparent);
+  background:color-mix(in srgb,var(--surface) 30%,transparent);
+  transition:border-color 150ms ease,background 150ms ease,transform 150ms var(--ease)}
+.chip:hover{border-color:color-mix(in srgb,var(--accent) 50%,transparent);
+  background:color-mix(in srgb,var(--accent) 8%,transparent);transform:translateY(1px)}
+.chip:active{transform:translateY(2px)}
+.chip-l{font-size:.72rem;font-weight:500;line-height:1.4}
+.chip[aria-pressed="true"]{border-color:color-mix(in srgb,var(--accent) 50%,transparent);
+  background:color-mix(in srgb,var(--accent) 14%,transparent)}
+.chip[aria-pressed="true"] .chip-l{font-weight:700;color:var(--accent)}
+.chip-r{font-size:.62rem;font-weight:600;color:var(--muted);opacity:.8;
+  font-variant-numeric:tabular-nums}
+.chip[aria-pressed="true"] .chip-r{color:var(--accent)}
+.chip-c{padding:.5px 4px;border-radius:4px;min-width:16px;text-align:center;
+  font-size:.58rem;font-weight:700;font-variant-numeric:tabular-nums;
+  background:color-mix(in srgb,var(--text) 6%,transparent);color:var(--muted)}
+.chip[aria-pressed="true"] .chip-c{background:color-mix(in srgb,var(--accent) 15%,transparent);
+  color:var(--accent)}
+/* 厂商 chip 选中时走品牌色，不走 accent —— 六家品牌色是这一版的重点 */
+.chip.v[aria-pressed="true"]{border-color:color-mix(in srgb,var(--vc) 55%,transparent);
+  background:color-mix(in srgb,var(--vc) 15%,transparent)}
+.chip.v[aria-pressed="true"] .chip-l{color:var(--vc)}
+.chip.v[aria-pressed="true"] .chip-c{background:color-mix(in srgb,var(--vc) 18%,transparent);
+  color:var(--vc)}
+.chip-i{width:13px;height:13px;flex:none;display:grid;place-items:center;color:var(--vc)}
+.chip-i svg{display:block;width:100%;height:100%}
+.chip-i.mono{border-radius:3px;background:var(--vc);color:#fff;font-size:7.5px;font-weight:800}
+.gdesc{font-size:11.6px;color:var(--muted);line-height:1.65;white-space:pre-line}
+/* 描述里那几个与 rate_multiplier 矛盾的百分比已经在 scrubDesc 里去掉了，
+   这行显示的是接口现拉的真实倍率 —— 页面上关于费率只留这一个数。 */
+.grate{margin-top:7px;font-family:var(--mono);font-size:11px;color:var(--accent)}
+/* 分组描述折叠块：窄屏默认收起，标题右侧一个小箭头 */
+.gnote summary{display:flex;align-items:center;gap:6px;cursor:pointer;list-style:none}
+.gnote summary::-webkit-details-marker{display:none}
+.gnote summary::after{content:'';width:5px;height:5px;flex:none;opacity:.65;
+  border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
+  transform:rotate(-45deg) translateY(-1px);transition:transform var(--d-short) var(--ease)}
+.gnote[open] summary::after{transform:rotate(45deg) translateY(-1px)}
+.gnote summary:hover{color:var(--text)}
+
+/* ---- 控制条 -------------------------------------------------------------- */
+.ctrl{display:flex;gap:11px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.search{position:relative;flex:1;min-width:190px;max-width:340px}
+.search svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);
+  width:15px;height:15px;fill:none;stroke:var(--subtle);stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+.search input{width:100%;height:38px;padding:0 12px 0 34px;border-radius:11px;
+  background:var(--glass);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border:1px solid var(--glass-line);color:var(--text);
+  font-size:13.5px;font-family:var(--sans);outline:none;
+  transition:border-color var(--d-short) var(--ease)}
+.search input:focus{border-color:var(--accent)}
+.search input::placeholder{color:var(--subtle)}
+.seg{display:inline-flex;border-radius:11px;overflow:hidden;border:1px solid var(--glass-line);
+  background:var(--glass);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+/* nowrap：窄屏下 .seg button 是 flex:1，等分会把「按名称」压到比文字还窄，
+   标签就会竖着断成 3 行。nowrap 把 min-content 撑成整个标签宽，flex 便不会
+   再压过这条线 —— 排序从两项加到三项后，这一排仍能在 390 宽下单行排下。 */
+.seg button{padding:0 13px;height:38px;font-size:12.5px;color:var(--muted);white-space:nowrap;
+  transition:background var(--d-short) var(--ease),color var(--d-short) var(--ease)}
+.seg button+button{border-left:1px solid var(--glass-line)}
+.seg button[aria-pressed="true"]{background:color-mix(in srgb,var(--accent) 14%,transparent);
+  color:var(--accent);font-weight:600}
+.ctrl-sp{flex:1}
+.count{font-size:12.5px;color:var(--subtle);font-variant-numeric:tabular-nums}
+
+/* ---- 模型卡：原件 ModelCard 逐条还原 ------------------------------------ */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px}
+/* 卡片交互按 admin-ui 的 .card-metal-press 重做：静置有一层外阴影撑起离面感，
+   hover 下沉 1px 且阴影**收敛变浅**（更贴桌面），active 再沉 1px。
+   原件那版是 hover translateY(-4px) + 阴影放大（上浮），与 admin-ui 的规矩正好
+   相反，所以整条换掉，不是调参数。顶部内高光同样照 admin-ui：inset 0 1px 0。 */
+.card{position:relative;overflow:hidden;border-radius:14px;
+  background:linear-gradient(145deg,color-mix(in srgb,var(--vc) 6%,transparent) 0%,var(--surface) 42%);
+  border:1px solid var(--border);padding:16px;display:flex;flex-direction:column;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06),var(--sh-rest);
+  animation:pricingFadeUp var(--d-med) ease-out both;
+  transition:transform 180ms var(--ease-press),box-shadow 180ms var(--ease-press),
+    border-color 180ms var(--ease-press),background 180ms var(--ease-press)}
+/* 顶部 2px 强调条：默认 opacity 0，hover 才出现 —— 原件最关键的一笔，留着 */
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;opacity:0;
+  transition:opacity 180ms ease;z-index:1;
+  background:linear-gradient(90deg,var(--vc),color-mix(in srgb,var(--vc) 20%,transparent))}
+.card:hover{transform:translateY(1px);
+  border-color:color-mix(in srgb,var(--vc) 40%,transparent);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.05),var(--sh-hover);
+  background:linear-gradient(145deg,color-mix(in srgb,var(--vc) 11%,transparent) 0%,var(--raised) 45%)}
+.card:active{transform:translateY(2px);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04),var(--sh-active)}
+.card:hover::before{opacity:1}
+/* 亮色下内高光是白的看不见，改成极浅的暗描边，否则卡片顶边会"断"一道 */
+html.light .card{box-shadow:inset 0 1px 0 rgba(255,255,255,.9),var(--sh-rest)}
+html.light .card:hover{box-shadow:inset 0 1px 0 rgba(255,255,255,.9),var(--sh-hover)}
+html.light .card:active{box-shadow:inset 0 1px 0 rgba(255,255,255,.9),var(--sh-active)}
+.card-hd{display:flex;align-items:flex-start;gap:9px;margin-bottom:13px}
+/* 原件是 alpha(vendorColor,.1) 的圆角底 + 26px 品牌图标 */
+.card-ic{width:32px;height:32px;border-radius:9px;flex:none;display:grid;place-items:center;
+  font-size:12px;font-weight:800;color:var(--vc);
+  background:color-mix(in srgb,var(--vc) 12%,transparent);
+  border:1px solid color-mix(in srgb,var(--vc) 20%,transparent)}
+.card-ic svg{display:block;width:19px;height:19px}
+.card-ic.mono{color:#fff;background:color-mix(in srgb,var(--vc) 82%,transparent)}
+/* 亮底上最浅的两支品牌色（Anthropic 2.77:1、OpenAI 2.81:1）差一点到图形的
+   3:1 门槛。掺 8% 黑就够（最差 3.18:1），色相几乎不动 —— 品牌标记按 WCAG
+   1.4.11 本可豁免，但差这么一点不如补上。 */
+html.light .card-ic{color:color-mix(in srgb,var(--vc) 92%,#000)}
+.card-nm{flex:1;min-width:0}
+.card-nm b{display:block;font-weight:700;line-height:1.3;font-size:.8rem;
+  font-family:var(--mono);overflow-wrap:anywhere}
+.card-nm span{font-size:.68rem;font-weight:600;opacity:.85;color:var(--vc)}
+/* 品牌色是给暗底调的，白底上最浅的两支（Anthropic #D97757 3.1:1、
+   OpenAI #10A37F 3.2:1）当文字色不合格。亮色下统一掺 28% 黑压深 —— 保住色相
+   与品牌辨识，六家压完分别是 5.5 / 5.7 / 6.5 / 7.2 / 8.4 / 8.0:1。
+   图标不压：它是图形，门槛 3:1，原色就够。 */
+html.light .card-nm span{color:color-mix(in srgb,var(--vc) 72%,#000);opacity:1}
+/* 复制按钮：opacity 0 → 卡片 hover .5 → 自身 hover 1（原件行为） */
+.card-cp{opacity:0;width:24px;height:24px;border-radius:7px;flex:none;display:grid;
+  place-items:center;color:var(--muted);transition:all var(--d-short) var(--ease)}
+.card:hover .card-cp{opacity:.5}
+.card-cp:hover{opacity:1;color:var(--vc);background:color-mix(in srgb,var(--vc) 12%,transparent)}
+.card-cp:focus-visible{opacity:1}
+.card-cp svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round}
+
+/* ---- 价格块：本站价与官方价并列 ------------------------------------------
+   三列网格：项目 | 本站价 | 官方价。本站价视觉占主导（accent 色 + 700），
+   官方价划掉 + 弱化，右上角挂实际折扣。official_pricing 为 null 的模型
+   用 .solo 收成两列，不显示空的官方列，也不编造对比。
+   ------------------------------------------------------------------------- */
+/* 这里刻意**不加** backdrop-filter：价格块贴在不透明的卡面上，模糊没有可透之物，
+   43 张卡就是 43 层常驻模糊，纯纯的合成开销（实测把截图卡到 120s 都出不来）。 */
+.px{margin-bottom:12px;padding:10px 11px;border-radius:9px;font-family:var(--mono);
+  background:color-mix(in srgb,var(--text) 3%,transparent);
+  border:1px solid color-mix(in srgb,var(--border) 65%,transparent)}
+.px-hd{display:flex;align-items:center;gap:6px;margin-bottom:7px;
+  padding-bottom:6px;border-bottom:1px solid color-mix(in srgb,var(--border) 55%,transparent)}
+.px-hd .k{font-size:9.6px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--subtle);font-family:var(--sans)}
+.px-hd .k.mine{color:var(--accent)}
+/* 图例上的「官方价」也划掉，和下面那一列的处理对上，靠视觉编码而非位置认列 */
+.px-hd .k.sl{text-decoration:line-through;text-decoration-thickness:1px}
+.px-hd .sp{flex:1}
+/* 折扣徽章：真实折扣 = 1 - 本站价/官方价，逐模型算，不是照抄 1-倍率 */
+.px-disc{font-size:9.8px;font-weight:800;padding:1.5px 6px;border-radius:20px;
+  font-family:var(--sans);white-space:nowrap;
+  background:color-mix(in srgb,var(--success) 16%,transparent);color:var(--success);
+  border:1px solid color-mix(in srgb,var(--success) 24%,transparent)}
+.px-g{display:grid;grid-template-columns:auto 1fr auto;gap:2px 9px;align-items:baseline}
+.px-g.solo{grid-template-columns:auto 1fr}
+/* dl > div 是合法 HTML，display:contents 让里面的 dt/dd 直接参与网格，
+   两列价格才能逐行对齐（各行官方价宽度不一，flex 排法对不齐）。 */
+.px-row{display:contents}
+.px-g dt{font-size:10.8px;color:var(--muted);white-space:nowrap}
+.px-g dd{font-size:11.6px;font-variant-numeric:tabular-nums;letter-spacing:-.02em;
+  text-align:right;white-space:nowrap}
+/* 本站价：主导 */
+.px-g dd.mine{color:var(--accent);font-weight:700}
+/* 官方价：划掉 + subtle，一眼看出是被替代的那个数 */
+.px-g dd.off{font-size:10.4px;color:var(--subtle);text-decoration:line-through;
+  text-decoration-thickness:1px;text-decoration-color:color-mix(in srgb,var(--subtle) 70%,transparent)}
+.px-g .cache dt,.px-g .cache dd.mine{opacity:.78;font-weight:500}
+.px-g dd.mine.c{color:var(--text);font-weight:500}
+.px-note{margin-top:7px;padding-top:6px;font-size:10px;color:var(--subtle);
+  font-family:var(--sans);line-height:1.5;
+  border-top:1px dashed color-mix(in srgb,var(--border) 80%,transparent)}
+.tags{display:flex;gap:5px;flex-wrap:wrap;margin-top:auto}
+.tag{font-size:.62rem;padding:2px 7px;border-radius:6px;font-weight:600;
+  background:color-mix(in srgb,var(--text) 8%,transparent);color:var(--muted);
+  font-family:var(--mono);white-space:nowrap}
+/* 上下文窗口是这一页最强的卖点，所以它是唯一走 accent + 描边的标签，
+   其余标签退成中性灰，免得三四个彩色标签互相抢。 */
+.tag.ctx{background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent);
+  border:1px solid color-mix(in srgb,var(--accent) 26%,transparent);font-weight:700;
+  font-variant-numeric:tabular-nums}
+.tag.ctx.unk{background:color-mix(in srgb,var(--text) 7%,transparent);color:var(--subtle);
+  border-color:color-mix(in srgb,var(--border) 80%,transparent);font-weight:600}
+.tag.think{background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)}
+.tag.grp{background:color-mix(in srgb,var(--text) 7%,transparent);color:var(--muted);
+  font-weight:500;font-family:var(--sans)}
+/* 可用性标签：只有接口真的返回状态字段时才会出现（见 JS 的 availOf）。
+   彩色圆点 + 文字双编码，不靠颜色单通道传达状态。 */
+.tag.av{display:inline-flex;align-items:center;gap:4px;font-family:var(--sans);
+  font-weight:600}
+.tag.av::before{content:'';width:5px;height:5px;border-radius:50%;flex:none;
+  background:currentColor}
+.tag.av.ok{background:color-mix(in srgb,var(--success) 15%,transparent);color:var(--success)}
+.tag.av.deg{background:color-mix(in srgb,var(--warn) 16%,transparent);color:var(--warn)}
+.tag.av.out{background:color-mix(in srgb,var(--error) 15%,transparent);color:var(--error)}
+
+/* ---- 表格视图（原件的 compact table） -----------------------------------
+   两行表头：第一行把「本站价」「官方价」分组跨列，第二行是具体项目。
+   两组各自带一层极淡底色，免得 43 行看下来串列。 */
+.tbl-wrap{border-radius:14px;overflow:auto;background:var(--glass);
+  backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+  border:1px solid var(--glass-line)}
+table{width:100%;border-collapse:separate;border-spacing:0;font-size:12.8px}
+thead th{position:sticky;z-index:2;background:var(--raised);padding:0 14px;
+  text-align:left;font-weight:700;font-size:11.6px;color:var(--muted);white-space:nowrap;
+  border-bottom:1px solid var(--border)}
+thead tr.g th{top:0;height:30px;font-size:10.4px;letter-spacing:.06em;text-transform:uppercase;
+  border-bottom:1px solid color-mix(in srgb,var(--border) 60%,transparent)}
+thead tr.h th{top:30px;height:34px}
+thead th.mine{color:var(--accent)}
+thead th.grp-a{background:color-mix(in srgb,var(--accent) 10%,var(--raised))}
+thead th.grp-b{background:color-mix(in srgb,var(--text) 4%,var(--raised))}
+td.grp-a{background:color-mix(in srgb,var(--accent) 4%,transparent)}
+td.grp-b{background:color-mix(in srgb,var(--text) 2%,transparent)}
+tbody td,tbody th{padding:9px 14px;text-align:left;font-weight:400;
+  border-bottom:1px solid color-mix(in srgb,var(--border) 55%,transparent)}
+tbody tr:last-child td{border-bottom:none}
+tbody tr{transition:background var(--d-micro) var(--ease)}
+tbody tr:hover td{background:var(--hover)}
+th.n,td.n{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;
+  letter-spacing:-.02em}
+td.m{font-family:var(--mono);font-size:12px}
+td.hi{color:var(--accent);font-weight:600}
+td.off{color:var(--subtle);text-decoration:line-through;
+  text-decoration-thickness:1px;font-size:12px}
+td.disc{color:var(--success);font-weight:700;font-size:11.6px}
+td.dash{color:var(--subtle);text-decoration:none}
+td.ctx{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--accent);
+  font-weight:600;white-space:nowrap}
+td.ctx.unk{color:var(--subtle);font-weight:400}
+/* ---- 表格：锁首列 --------------------------------------------------------
+   11 列在 390 宽下必然横向滚动，滚起来后光看数字认不出是哪个模型，所以模型名
+   那一列 sticky:left。背景必须是**不透明**的（var(--surface)/var(--raised)），
+   .tbl-wrap 那层毛玻璃是半透明的，直接继承会看见底下滑过去的单元格。
+   z-index 分三层：左上角交叉格 4 > 表头行 3 > 首列 2 > 普通格 1。 */
+tbody td:first-child,tbody th:first-child{position:sticky;left:0;z-index:2;
+  background:var(--surface);
+  border-right:1px solid color-mix(in srgb,var(--border) 85%,transparent)}
+thead th:first-child{left:0;z-index:4;
+  border-right:1px solid color-mix(in srgb,var(--border) 85%,transparent)}
+tbody tr:hover td:first-child{background:var(--hover)}
+/* 首列宽度：min-width（而不是 max-width）。表格是 auto 布局，max-width 对单元格
+   只是建议、按 min-content 分配才是实际行为 —— 早先写 max-width:140px 且带
+   overflow-wrap:anywhere，min-content 直接塌到**一个字符**宽，43 行模型名全被
+   竖着切成一列（claude-opus-5 断成 6 行）。
+   现在给下界并允许在连字符处折行（不加 anywhere，就不会逐字符断）：
+   claude-sonnet-5-thinking 折成 claude- / sonnet-5- / thinking 三行。 */
+td.m:first-child,thead tr.h th:first-child{min-width:118px}
+.vd{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.vd .vi{width:15px;height:15px;display:grid;place-items:center;flex:none;color:var(--vc)}
+.vd .vi svg{display:block;width:100%;height:100%}
+.vd .vi.mono{border-radius:4px;background:var(--vc);color:#fff;font-size:8.5px;font-weight:800}
+
+/* ---- 状态 ---------------------------------------------------------------- */
+.msg{padding:56px 22px;text-align:center;color:var(--muted);border-radius:14px}
+.msg b{display:block;font-size:15px;color:var(--text);margin-bottom:6px}
+.msg code{font-family:var(--mono);font-size:12px;background:var(--raised);
+  padding:2px 6px;border-radius:5px}
+/* 骨架屏：原件用 MUI Skeleton，这里自己画 */
+.sk{border-radius:14px;background:var(--surface);border:1px solid var(--border);
+  height:196px;position:relative;overflow:hidden}
+.sk.t{height:22px;width:190px;border-radius:7px;display:inline-block;vertical-align:middle}
+.sk::after{content:'';position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--text) 5%,transparent),transparent);
+  animation:shim 1.4s infinite}
+@keyframes shim{from{transform:translateX(-100%)}to{transform:translateX(100%)}}
+.toast{position:fixed;bottom:24px;left:50%;transform:translate(-50%,80px);
+  background:color-mix(in srgb,var(--raised) 88%,transparent);
+  backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+  border:1px solid var(--glass-line);color:var(--text);
+  padding:9px 16px;border-radius:11px;font-size:13px;opacity:0;z-index:90;
+  transition:opacity var(--d-med) var(--ease),transform var(--d-med) var(--ease);
+  pointer-events:none;box-shadow:0 8px 30px rgba(0,0,0,.35)}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+
+/* ---- 断点：1200 / 900 / 640 / 430 四档 ----------------------------------
+   原先是 960 / 640 / 560 三档，问题出在 960 那一档只是把 240px 侧栏拍到内容
+   上方 —— 侧栏里两组 chip 竖着堆起来有 200px 多高，手机上首屏全是筛选器，
+   第一张卡片要滚过去才看得见。现在 900 以下侧栏收成**顶部横向滚动筛选条**。
+   ------------------------------------------------------------------------- */
+
+/* 1200：侧栏与间距先收一档，避免内容区被挤到两列卡片放不下 */
+@media (max-width:1200px){
+  .main{grid-template-columns:216px minmax(0,1fr);gap:18px}
+  .wrap,.top-in{padding:0 18px}
+}
+
+/* 900：侧栏 → 顶部横向滚动筛选条 -------------------------------------------
+   .fbar 平时是普通块（竖排两组），这一档变成单行 flex + overflow-x:auto。
+   筛选条自己 sticky 在顶栏下方，滚动时始终能改筛选，不必回到页首。 */
+@media (max-width:900px){
+  .main{grid-template-columns:minmax(0,1fr);gap:14px}
+  /* sticky 必须留在 .side 上，不能只给里面的 .fbar —— sticky 元素**跑不出父级的
+     盒子**：.fbar 的父级 .side-in 只有 100 来 px 高，滚动时连盒子一起离开视口，
+     .fbar 就跟着走了（实测 position 报 sticky 但 top 是 -456，从没真的钉住过）。
+     所以粘的是 .side，并且它的底色要盖住**全部**内容（含下面折叠的分组说明），
+     否则那两行没有底、直接压在卡片上叠字。
+     max-height + overflow-y：说明被展开时不至于把整屏占掉。 */
+  .side{position:sticky;top:56px;z-index:30;align-self:start;
+    max-height:calc(100vh - 60px);overflow-y:auto;overscroll-behavior:contain;
+    /* 这层底**不透明**：半透明 + blur 时，卡片的价格数字会从分组说明那两行
+       文字底下透出来，两层字叠着都难读。这里读得清比毛玻璃好看更重要。 */
+    background:var(--canvas);
+    border-bottom:1px solid var(--border);
+    margin:0 -18px;padding:7px 18px 8px}
+  .side-in{padding:0;background:none;border:none;backdrop-filter:none;
+    -webkit-backdrop-filter:none}
+  .fbar{display:flex;flex-wrap:nowrap;gap:14px;overflow-x:auto;
+    scrollbar-width:none;-webkit-overflow-scrolling:touch;
+    /* 负边距 + 同量内边距：让横滚内容能贴到屏幕边缘，而不是在 18px 处就截断 */
+    margin:0 -18px;padding:0 18px}
+  .fbar::-webkit-scrollbar{display:none}
+  .fbar .fsec{margin:0;flex:none;display:flex;align-items:center;gap:8px}
+  /* 标题在横排里改成行内小标签，竖排那套 margin-bottom 会把它顶飞 */
+  .fbar .fsec-t{margin:0;flex:none;font-size:.66rem}
+  .fbar .chips{flex-wrap:nowrap}
+  .fbar .chip{flex:none}
+  /* 分组说明留在筛选条下方（不进横滚），窄屏默认收起 —— 见 JS 的 WIDE */
+  .gnote{margin-top:10px;margin-bottom:0}
+  .gnote+.gnote{margin-top:6px}
+  /* hero 里那排厂商 pill 与下面 sticky 筛选条里的厂商筛选是同一组东西（后者还
+     带计数）。侧栏一旦收成筛选条，这排就纯属重复，占两三行把首张卡片推下去。 */
+  .pills{display:none}
+}
+
+/* 640：卡片单列、控制条重排 */
+@media (max-width:640px){
+  .wrap,.top-in{padding:0 14px}
+  .side{margin:0 -14px;padding:7px 14px 8px}
+  .fbar{margin:0 -14px;padding:0 14px}
+  .top-in{gap:8px}
+  .hero{padding:22px 0 14px}
+  .stats{gap:8px}
+  .stat{padding:10px 14px;min-width:0;flex:1 1 46%;gap:9px}
+  .stat-ic{width:30px;height:30px}
+  .stat b{font-size:.98rem}
+  .grid{grid-template-columns:1fr;gap:10px}
+  .ctrl{gap:8px}
+  .search{max-width:none;flex:1 1 100%}
+  /* flex 基准取内容宽而非 0：原来的 flex:1 让「视图」（2 个按钮）与「排序」
+     （3 个按钮）等分同一行，排序那组被压到 116px，而三个标签的最小内容宽是
+     150px —— .seg 有 overflow:hidden，超出的「按价格」会被直接切掉。
+     按内容基准分配后两组各取所需（合计约 259px < 可用 362px），仍占满整行。 */
+  .seg{flex:1 1 auto}
+  .seg button{flex:1 1 auto;padding:0 8px}
+  .count{width:100%;text-align:right}
+}
+
+/* 430：最窄一档（iPhone 竖屏 390/414/430 全落在这里） */
+@media (max-width:430px){
+  .wrap,.top-in{padding:0 12px}
+  .side{margin:0 -12px;padding:7px 12px 8px}
+  .fbar{margin:0 -12px;padding:0 12px}
+  .hero h1{font-size:1.45rem}
+  /* 统计卡两列：430 宽下四张挤一行每张不到 100px，数字会换行 */
+  .stat{flex:1 1 calc(50% - 4px);padding:9px 11px}
+  .stat span{font-size:.63rem}
+  /* 价格块的 dt/dd 在 390 宽下最紧：字号各降 0.4px，留出官方价那一列 */
+  .px{padding:9px 10px}
+  .px-g{gap:2px 7px}
+  .px-g dt{font-size:10.4px}
+  .px-g dd{font-size:11.2px}
+  .card{padding:14px}
+  .tag{font-size:.6rem;padding:2px 6px}
+}
+
+/* ---- 减少动效 -----------------------------------------------------------
+   **必须放在整份样式表最后**。这一块要覆盖的 .card:hover / .pill:hover 等规则
+   与它选择器权重相同，同权重下比的是源码顺序 —— 早先放在文件开头，实测
+   prefers-reduced-motion:reduce 下 pill 照样位移 1px，因为后面的规则又把它写
+   回去了。放到末尾才真正生效。
+   ------------------------------------------------------------------------- */
+@media (prefers-reduced-motion:reduce){
+  /* animation-delay 也必须清零，只清 duration 不够。
+     .card 是 `animation:pricingFadeUp .. both` + 内联 animation-delay（最高 .4s），
+     `both` 让延迟期间停在 from{opacity:0} —— 实测首帧 43 张卡全不可见、
+     373ms 时仍有 30 张空白，400ms 才补齐。对声明了「减少动效」的用户来说，
+     这是一段半秒的空白页，而不是"没有动画"。 */
+  *{animation-duration:.01ms!important;animation-delay:0s!important;
+    transition-duration:.01ms!important;transition-delay:0s!important}
+  /* 清时长还不够：按压位移是 transform，瞬时跳 1px 仍然是"动"。
+     声明了减少动效就整块取消位移，只留颜色与阴影的变化（那两项不是运动）。 */
+  .card:hover,.card:active,.pill:hover,.pill:active,.chip:hover,.chip:active,
+  .ibtn:active,.back:active,.card-cp:active{transform:none}
+  /* 骨架屏那道扫光是常驻循环动画，减少动效下直接停掉，只留静态底色 */
+  .sk::after{display:none}
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="top-in">
+    <a class="back" href="/"><svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 19-7-7 7-7"/></svg><span data-i="back">返回</span></a>
+    <a class="brand" href="/"><img src="/favicon.png" alt=""><span>SkiAPI</span></a>
+    <span class="top-sp"></span>
+    <button class="ibtn" id="lang" title="切换语言"><span id="lang-t" style="font-size:11px;font-weight:700">ZH</span></button>
+    <button class="ibtn" id="theme" title="切换主题" aria-label="切换主题">
+      <svg viewBox="0 0 24 24" id="theme-ic"></svg>
+    </button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="hero">
+    <h1 data-i="h1">模型广场</h1>
+    <div class="tally" id="tally"><span class="sk t"></span></div>
+    <p data-i="sub">价格随上游调整，此页实时读取接口。折扣按每个模型的本站价 ÷ 官方价实算。</p>
+    <div class="hero-desc glass" id="desc" hidden></div>
+    <div class="stats" id="stats"></div>
+    <div class="pills" id="pills"></div>
+  </div>
+
+  <div class="main">
+    <aside class="side"><div class="side-in" id="side"></div></aside>
+    <div>
+      <div class="ctrl">
+        <div class="search">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+          <input id="q" type="search" placeholder="搜索模型…" autocomplete="off" aria-label="搜索模型">
+        </div>
+        <div class="seg" role="group" aria-label="视图">
+          <button id="v-card" aria-pressed="true" data-i="v.card">卡片</button>
+          <button id="v-tbl" aria-pressed="false" data-i="v.table">表格</button>
+        </div>
+        <div class="seg" role="group" aria-label="排序">
+          <button id="s-recent" aria-pressed="true" data-i="s.recent">最新</button>
+          <button id="s-name" aria-pressed="false" data-i="s.name">按名称</button>
+          <button id="s-price" aria-pressed="false" data-i="s.price">按价格</button>
+        </div>
+        <span class="ctrl-sp"></span>
+        <span class="count" id="count"></span>
+      </div>
+      <div id="out"><div class="grid"><div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div><div class="sk"></div></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<!-- ==========================================================================
+     厂商品牌标记（内联）
+     取自 lobehub/lobe-icons，2026-08-06 抓取。CSP 只放行 self，外链图标/
+     webfont 会被拦，所以整表内联进这个单文件。全部单色 currentColor 标记，
+     由各家品牌色着色；商标归各自所有者。
+     ======================================================================== -->
+<script>
+// Vendor brand marks, inlined because app CSP allows 'self' only.
+// Source: lobehub/lobe-icons (fetched 2026-08-06). Brand marks belong to their owners.
+//
+// All six sources are single-color marks that already use fill="currentColor", so the
+// `color` field below is what tints them. No multi-color brand SVG is used here.
+//
+// The source files carry fill-rule="evenodd" on the <svg> element rather than on the
+// <path>, and several marks rely on it for their counters (the triangular hole in the
+// Anthropic "A", the inner cutout in the Qwen mark). vendorIconSVG() therefore emits
+// fill-rule="evenodd" on the wrapper so the geometry renders as the source intended.
+window.VENDOR_ICONS = {
+  Anthropic: {
+    label: 'Anthropic',
+    color: '#D97757',
+    viewBox: '0 0 24 24',
+    path: '<path d="M13.827 3.52h3.603L24 20h-3.603l-6.57-16.48zm-7.258 0h3.767L16.906 20h-3.674l-1.343-3.461H5.017l-1.344 3.46H0L6.57 3.522zm4.132 9.959L8.453 7.687 6.205 13.48H10.7z"/>',
+    fallbackText: 'A',
+  },
+  OpenAI: {
+    label: 'OpenAI',
+    color: '#10A37F',
+    viewBox: '0 0 24 24',
+    path: '<path d="M9.205 8.658v-2.26c0-.19.072-.333.238-.428l4.543-2.616c.619-.357 1.356-.523 2.117-.523 2.854 0 4.662 2.212 4.662 4.566 0 .167 0 .357-.024.547l-4.71-2.759a.797.797 0 00-.856 0l-5.97 3.473zm10.609 8.8V12.06c0-.333-.143-.57-.429-.737l-5.97-3.473 1.95-1.118a.433.433 0 01.476 0l4.543 2.617c1.309.76 2.189 2.378 2.189 3.948 0 1.808-1.07 3.473-2.76 4.163zM7.802 12.703l-1.95-1.142c-.167-.095-.239-.238-.239-.428V5.899c0-2.545 1.95-4.472 4.591-4.472 1 0 1.927.333 2.712.928L8.23 5.067c-.285.166-.428.404-.428.737v6.898zM12 15.128l-2.795-1.57v-3.33L12 8.658l2.795 1.57v3.33L12 15.128zm1.796 7.23c-1 0-1.927-.332-2.712-.927l4.686-2.712c.285-.166.428-.404.428-.737v-6.898l1.974 1.142c.167.095.238.238.238.428v5.233c0 2.545-1.974 4.472-4.614 4.472zm-5.637-5.303l-4.544-2.617c-1.308-.761-2.188-2.378-2.188-3.948A4.482 4.482 0 014.21 6.327v5.423c0 .333.143.571.428.738l5.947 3.449-1.95 1.118a.432.432 0 01-.476 0zm-.262 3.9c-2.688 0-4.662-2.021-4.662-4.519 0-.19.024-.38.047-.57l4.686 2.71c.286.167.571.167.856 0l5.97-3.448v2.26c0 .19-.07.333-.237.428l-4.543 2.616c-.619.357-1.356.523-2.117.523zm5.899 2.83a5.947 5.947 0 005.827-4.756C22.287 18.339 24 15.84 24 13.296c0-1.665-.713-3.282-1.998-4.448.119-.5.19-.999.19-1.498 0-3.401-2.759-5.947-5.946-5.947-.642 0-1.26.095-1.88.31A5.962 5.962 0 0010.205 0a5.947 5.947 0 00-5.827 4.757C1.713 5.447 0 7.945 0 10.49c0 1.666.713 3.283 1.998 4.448-.119.5-.19 1-.19 1.499 0 3.401 2.759 5.946 5.946 5.946.642 0 1.26-.095 1.88-.309a5.96 5.96 0 004.162 1.713z"/>',
+    fallbackText: 'O',
+  },
+  MiniMax: {
+    label: 'MiniMax',
+    color: '#F23F5D',
+    viewBox: '0 0 24 24',
+    path: '<path d="M16.278 2c1.156 0 2.093.927 2.093 2.07v12.501a.74.74 0 00.744.709.74.74 0 00.743-.709V9.099a2.06 2.06 0 012.071-2.049A2.06 2.06 0 0124 9.1v6.561a.649.649 0 01-.652.645.649.649 0 01-.653-.645V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v7.472a2.037 2.037 0 01-2.048 2.026 2.037 2.037 0 01-2.048-2.026v-12.5a.785.785 0 00-.788-.753.785.785 0 00-.789.752l-.001 15.904A2.037 2.037 0 0113.441 22a2.037 2.037 0 01-2.048-2.026V18.04c0-.356.292-.645.652-.645.36 0 .652.289.652.645v1.934c0 .263.142.506.372.638.23.131.514.131.744 0a.734.734 0 00.372-.638V4.07c0-1.143.937-2.07 2.093-2.07zm-5.674 0c1.156 0 2.093.927 2.093 2.07v11.523a.648.648 0 01-.652.645.648.648 0 01-.652-.645V4.07a.785.785 0 00-.789-.78.785.785 0 00-.789.78v14.013a2.06 2.06 0 01-2.07 2.048 2.06 2.06 0 01-2.071-2.048V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v3.8a2.06 2.06 0 01-2.071 2.049A2.06 2.06 0 010 12.9v-1.378c0-.357.292-.646.652-.646.36 0 .653.29.653.646V12.9c0 .418.343.757.766.757s.766-.339.766-.757V9.099a2.06 2.06 0 012.07-2.048 2.06 2.06 0 012.071 2.048v8.984c0 .419.343.758.767.758.423 0 .766-.339.766-.758V4.07c0-1.143.937-2.07 2.093-2.07z"/>',
+    fallbackText: 'M',
+  },
+  DeepSeek: {
+    label: 'DeepSeek',
+    color: '#4D6BFE',
+    viewBox: '0 0 24 24',
+    path: '<path d="M23.748 4.482c-.254-.124-.364.113-.512.234-.051.039-.094.09-.137.136-.372.397-.806.657-1.373.626-.829-.046-1.537.214-2.163.848-.133-.782-.575-1.248-1.247-1.548-.352-.156-.708-.311-.955-.65-.172-.241-.219-.51-.305-.774-.055-.16-.11-.323-.293-.35-.2-.031-.278.136-.356.276-.313.572-.434 1.202-.422 1.84.027 1.436.633 2.58 1.838 3.393.137.093.172.187.129.323-.082.28-.18.552-.266.833-.055.179-.137.217-.329.14a5.526 5.526 0 01-1.736-1.18c-.857-.828-1.631-1.742-2.597-2.458a11.365 11.365 0 00-.689-.471c-.985-.957.13-1.743.388-1.836.27-.098.093-.432-.779-.428-.872.004-1.67.295-2.687.684a3.055 3.055 0 01-.465.137 9.597 9.597 0 00-2.883-.102c-1.885.21-3.39 1.102-4.497 2.623C.082 8.606-.231 10.684.152 12.85c.403 2.284 1.569 4.175 3.36 5.653 1.858 1.533 3.997 2.284 6.438 2.14 1.482-.085 3.133-.284 4.994-1.86.47.234.962.327 1.78.397.63.059 1.236-.03 1.705-.128.735-.156.684-.837.419-.961-2.155-1.004-1.682-.595-2.113-.926 1.096-1.296 2.746-2.642 3.392-7.003.05-.347.007-.565 0-.845-.004-.17.035-.237.23-.256a4.173 4.173 0 001.545-.475c1.396-.763 1.96-2.015 2.093-3.517.02-.23-.004-.467-.247-.588zM11.581 18c-2.089-1.642-3.102-2.183-3.52-2.16-.392.024-.321.471-.235.763.09.288.207.486.371.739.114.167.192.416-.113.603-.673.416-1.842-.14-1.897-.167-1.361-.802-2.5-1.86-3.301-3.307-.774-1.393-1.224-2.887-1.298-4.482-.02-.386.093-.522.477-.592a4.696 4.696 0 011.529-.039c2.132.312 3.946 1.265 5.468 2.774.868.86 1.525 1.887 2.202 2.891.72 1.066 1.494 2.082 2.48 2.914.348.292.625.514.891.677-.802.09-2.14.11-3.054-.614zm1-6.44a.306.306 0 01.415-.287.302.302 0 01.2.288.306.306 0 01-.31.307.303.303 0 01-.304-.308zm3.11 1.596c-.2.081-.399.151-.59.16a1.245 1.245 0 01-.798-.254c-.274-.23-.47-.358-.552-.758a1.73 1.73 0 01.016-.588c.07-.327-.008-.537-.239-.727-.187-.156-.426-.199-.688-.199a.559.559 0 01-.254-.078c-.11-.054-.2-.19-.114-.358.028-.054.16-.186.192-.21.356-.202.767-.136 1.146.016.352.144.618.408 1.001.782.391.451.462.576.685.914.176.265.336.537.445.848.067.195-.019.354-.25.452z"/>',
+    fallbackText: 'D',
+  },
+  ZhipuAI: {
+    label: 'Z.ai',
+    color: '#3859FF',
+    viewBox: '0 0 24 24',
+    path: '<path d="M12.105 2L9.927 4.953H.653L2.83 2h9.276zM23.254 19.048L21.078 22h-9.242l2.174-2.952h9.244zM24 2L9.264 22H0L14.736 2H24z"/>',
+    fallbackText: 'Z',
+  },
+  Qwen: {
+    label: 'Qwen',
+    color: '#615CED',
+    viewBox: '0 0 24 24',
+    path: '<path d="M12.604 1.34c.393.69.784 1.382 1.174 2.075a.18.18 0 00.157.091h5.552c.174 0 .322.11.446.327l1.454 2.57c.19.337.24.478.024.837-.26.43-.513.864-.76 1.3l-.367.658c-.106.196-.223.28-.04.512l2.652 4.637c.172.301.111.494-.043.77-.437.785-.882 1.564-1.335 2.34-.159.272-.352.375-.68.37-.777-.016-1.552-.01-2.327.016a.099.099 0 00-.081.05 575.097 575.097 0 01-2.705 4.74c-.169.293-.38.363-.725.364-.997.003-2.002.004-3.017.002a.537.537 0 01-.465-.271l-1.335-2.323a.09.09 0 00-.083-.049H4.982c-.285.03-.553-.001-.805-.092l-1.603-2.77a.543.543 0 01-.002-.54l1.207-2.12a.198.198 0 000-.197 550.951 550.951 0 01-1.875-3.272l-.79-1.395c-.16-.31-.173-.496.095-.965.465-.813.927-1.625 1.387-2.436.132-.234.304-.334.584-.335a338.3 338.3 0 012.589-.001.124.124 0 00.107-.063l2.806-4.895a.488.488 0 01.422-.246c.524-.001 1.053 0 1.583-.006L11.704 1c.341-.003.724.032.9.34zm-3.432.403a.06.06 0 00-.052.03L6.254 6.788a.157.157 0 01-.135.078H3.253c-.056 0-.07.025-.041.074l5.81 10.156c.025.042.013.062-.034.063l-2.795.015a.218.218 0 00-.2.116l-1.32 2.31c-.044.078-.021.118.068.118l5.716.008c.046 0 .08.02.104.061l1.403 2.454c.046.081.092.082.139 0l5.006-8.76.783-1.382a.055.055 0 01.096 0l1.424 2.53a.122.122 0 00.107.062l2.763-.02a.04.04 0 00.035-.02.041.041 0 000-.04l-2.9-5.086a.108.108 0 010-.113l.293-.507 1.12-1.977c.024-.041.012-.062-.035-.062H9.2c-.059 0-.073-.026-.043-.077l1.434-2.505a.107.107 0 000-.114L9.225 1.774a.06.06 0 00-.053-.031zm6.29 8.02c.046 0 .058.02.034.06l-.832 1.465-2.613 4.585a.056.056 0 01-.05.029.058.058 0 01-.05-.029L8.498 9.841c-.02-.034-.01-.052.028-.054l.216-.012 6.722-.012z"/>',
+    fallbackText: 'Q',
+  },
+};
+
+// Maps a model name to a vendor key. Order matters: claude before gpt,
+// because the Claude group contains a gpt-4o entry that would otherwise mis-tag.
+window.VENDOR_RULES = [
+  [/^claude/i, 'Anthropic'],
+  [/^gpt|^o[134]-|^chatgpt/i, 'OpenAI'],
+  [/^minimax/i, 'MiniMax'],
+  [/^deepseek/i, 'DeepSeek'],
+  [/^glm/i, 'ZhipuAI'],
+  [/^qwen/i, 'Qwen'],
+];
+
+window.vendorOf = n => (window.VENDOR_RULES.find(([re]) => re.test(n)) || [null, 'Other'])[1];
+
+// Renders a vendor mark as a standalone SVG string at `size` px, or '' when the vendor
+// is unknown or has no path (caller falls back to `fallbackText`).
+window.vendorIconSVG = (vendorKey, size = 20) => {
+  const icon = window.VENDOR_ICONS[vendorKey];
+  if (!icon || !icon.path) return '';
+  return (
+    '<svg xmlns="http://www.w3.org/2000/svg"' +
+    ' width="' + size + '" height="' + size + '"' +
+    ' viewBox="' + icon.viewBox + '"' +
+    ' fill="currentColor" fill-rule="evenodd"' +
+    ' role="img" aria-label="' + icon.label + '">' +
+    icon.path +
+    '</svg>'
+  );
+};
+</script>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+
+/* ---- 厂商表 -------------------------------------------------------------
+   品牌标记来自上面内联的 VENDOR_ICONS（lobehub/lobe-icons）。那一段万一没
+   内联进来，下面这份兜底表保证颜色/名称/首字母块仍然正确，页面不开天窗。
+   ---------------------------------------------------------------------- */
+const FALLBACK_VENDORS = {
+  Anthropic: {label:'Anthropic', color:'#D97757', fallbackText:'A'},
+  OpenAI:    {label:'OpenAI',    color:'#10A37F', fallbackText:'O'},
+  MiniMax:   {label:'MiniMax',   color:'#F23F5D', fallbackText:'M'},
+  DeepSeek:  {label:'DeepSeek',  color:'#4D6BFE', fallbackText:'D'},
+  ZhipuAI:   {label:'Z.ai',      color:'#3859FF', fallbackText:'Z'},
+  Qwen:      {label:'Qwen',      color:'#615CED', fallbackText:'Q'},
+};
+/* 本站接口不返回 vendor 字段，按模型名前缀推导，好让厂商强调色用得上。
+   顺序有意义：claude 必须在 gpt 之前判断，否则 Claude 分组里的 gpt-4o 会串色。 */
+const FALLBACK_RULES = [
+  [/^claude/i,'Anthropic'], [/^gpt|^o[134]-|^chatgpt/i,'OpenAI'],
+  [/^minimax/i,'MiniMax'], [/^deepseek/i,'DeepSeek'],
+  [/^glm/i,'ZhipuAI'], [/^qwen/i,'Qwen'],
+];
+/* 卡片/表格里厂商的排列顺序：先按模型数降序，同数按这里的次序，保证每次刷新一致 */
+const VENDOR_ORDER = ['Anthropic','OpenAI','MiniMax','DeepSeek','ZhipuAI','Qwen'];
+
+const ICONS = (window.VENDOR_ICONS && typeof window.VENDOR_ICONS === 'object')
+  ? window.VENDOR_ICONS : FALLBACK_VENDORS;
+const HAS_SVG = typeof window.vendorIconSVG === 'function';
+const RULES = Array.isArray(window.VENDOR_RULES) ? window.VENDOR_RULES : FALLBACK_RULES;
+const vendorOf = typeof window.vendorOf === 'function'
+  ? window.vendorOf
+  : n => (RULES.find(([re]) => re.test(n)) || [null,'Other'])[1];
+const meta = v => ICONS[v] || FALLBACK_VENDORS[v] || {};
+/* 认不出厂商时退到 accent 蓝（admin-ui 主色），不是原件那支紫 */
+const vcOf = v => meta(v).color || '#3291FF';
+const vlOf = v => meta(v).label || v;      /* ZhipuAI 显示成 Z.ai 就靠这里 */
+const vmOf = v => meta(v).fallbackText || String(v).slice(0,1).toUpperCase();
+
+/* ---- 上下文窗口 ---------------------------------------------------------
+   接口不返回这个字段（实测 2026-08-06：models[] 只有 name / platform /
+   pricing / official_pricing 四个键），所以只能在前端按模型名查表。
+
+   为什么是一张**显式表**而不是一串 if：上下文窗口是要印在卡片上的硬数字，
+   写错就是虚标。一串猜前缀的 if 里，"哪条先命中"藏在控制流里，加一行就可能
+   悄悄改掉另一个模型的读数。下面这张表按顺序取第一条命中，规则本身可以逐行
+   核对；每条都注明依据的档位，改数据不用读代码。
+
+   兜底是 **null（显示"未公布"）而不是猜一个数**。gpt-5.6-* 与 gpt-4o 就落在
+   兜底上：权威档位表里没有这几个，标 200K 或 1M 都是编的。宁可留白。
+
+   顺序上的硬要求：具体规则必须在同族的宽泛规则之前 —— sonnet-5 / sonnet-4-6
+   这两条 1M 的，必须排在 sonnet 那条 200K 之前，否则永远命中不到。 */
+const CTX_UNKNOWN = null;
+const CTX_RULES = [
+  // Claude 3 代：这一代是 200K，先拦掉。放在 opus/sonnet 的 1M 规则之前，
+  // 否则下面那条 "opus 全系 1M" 会把 claude-3-opus-20240229 也标成 1M —— 它不是。
+  [/^claude-3(?:-|$)/i,            200000, 'Claude 3 代'],
+  // Claude 4/5 的 opus 全系 = 1M。两种命名都要覆盖：
+  // claude-opus-4-5 / claude-opus-5（新序）与 claude-4-opus-20250514（旧序）
+  [/^claude-opus-/i,               1000000, 'opus 全系'],
+  [/^claude-\d+-opus/i,            1000000, 'opus 全系（旧命名）'],
+  // Sonnet 只有 5 与 4.6 是 1M，其余 200K
+  [/^claude-sonnet-5(?:-|$)/i,     1000000, 'sonnet 5'],
+  [/^claude-sonnet-4-6(?:-|$)/i,   1000000, 'sonnet 4.6'],
+  [/^claude-sonnet-/i,             200000, 'sonnet 4.5 / 4.0'],
+  [/^claude-\d+-sonnet/i,          200000, 'sonnet 4.0（旧命名）'],
+  [/^claude-haiku-/i,              200000, 'haiku'],
+  [/^claude-\d+-haiku/i,           200000, 'haiku（旧命名）'],
+  // 非 Claude
+  [/^qwen3-coder-next(?:-|$)/i,    256000, 'qwen3-coder-next'],
+  [/^glm-5(?:-|$)/i,               200000, 'glm-5'],
+  [/^minimax-/i,                   200000, 'minimax'],
+  [/^deepseek-3\.2(?:-|$)/i,       128000, 'deepseek-3.2'],
+];
+/* 查表：命中即返回 token 数，没命中返回 CTX_UNKNOWN。-thinking 后缀不影响窗口，
+   所以先剥掉再查（claude-opus-5-thinking 与 claude-opus-5 同为 1M）。 */
+function ctxOf(name) {
+  const s = String(name).replace(/-thinking$/i, '');
+  const hit = CTX_RULES.find(r => r[0].test(s));
+  return hit ? hit[1] : CTX_UNKNOWN;
+}
+/* 1000000 → "1M"、256000 → "256K"。不做四舍五入近似，除不尽就退回原数，
+   免得出现 "0.9M" 这种既不准又难读的写法。 */
+function ctxLabel(n) {
+  if (n == null) return null;
+  if (n % 1000000 === 0) return (n / 1000000) + 'M';
+  if (n % 1000 === 0) return (n / 1000) + 'K';
+  return String(n);
+}
+
+/* ---- 可用性 -------------------------------------------------------------
+   这一层**完全由接口数据驱动，前端不存任何状态**。
+
+   为什么不把实测快照写进页面：2026-08-06 实测到 gpt-5.6-sol 降级、
+   minimax-m2.5 上游未供货，但这是**那一刻**的快照。硬编码进静态页之后，
+   上游恢复了页面还在说"未供货" —— 那就从"信息"变成了"谎言"，而且没人会
+   记得回来改。价格这一页的全部可信度就建立在"数字都是现拉的"上。
+
+   实测（2026-08-06）/api/v1/model-plaza 的 models[] 只有 name / platform /
+   pricing / official_pricing 四个键，没有任何可用性字段；/api/v1/models、
+   /api/v1/model-status、/api/v1/status 全是 404。所以现在这个函数对所有模型
+   都返回 null，卡片上不出可用性标签 —— 这是有意的：宁可不说，不可说错。
+
+   后端哪天加上字段（status / availability / available / state 任一），这里
+   自动开始渲染，不需要改前端。 */
+const AVAIL_MAP = {
+  ok:'ok', up:'ok', available:'ok', healthy:'ok', normal:'ok', active:'ok', online:'ok',
+  degraded:'deg', partial:'deg', unstable:'deg', slow:'deg', limited:'deg',
+  unavailable:'out', out:'out', out_of_stock:'out', offline:'out', down:'out',
+  disabled:'out', error:'out',
+};
+function availOf(m) {
+  const raw = m && (m.status != null ? m.status
+    : m.availability != null ? m.availability
+    : m.available != null ? m.available
+    : m.state);
+  if (raw == null) return null;
+  if (typeof raw === 'boolean') return raw ? 'ok' : 'out';
+  const k = String(raw).toLowerCase().replace(/[\s-]+/g, '_');
+  // 认不出的取值一律当"没有信息"处理，不猜、不显示 —— 免得把未知渲染成"可用"
+  return AVAIL_MAP[k] || null;
+}
+
+/* ---- i18n --------------------------------------------------------------- */
+const EN = {
+  'back':'Back','h1':'Model Plaza',
+  'sub':'Prices follow upstream changes; this page reads the API live. Each discount is computed from that model’s own site price ÷ list price.',
+  'ph':'Search models…','v.card':'Cards','v.table':'Table',
+  's.recent':'Newest','s.name':'By name','s.price':'By price',
+  'f.group':'Group','f.vendor':'Vendor','f.all':'All',
+  'th.model':'Model','th.vendor':'Vendor','th.in':'input','th.out':'output',
+  'th.cw':'cache write','th.cr':'cache read','th.disc':'discount','th.grp':'Group',
+  'mine':'our price','off':'list price',
+  'st.models':'models','st.vendors':'vendors','st.groups':'groups','st.cheapest':'cheapest input',
+  'copied':'Model name copied','err':'Could not load','noff':'Model plaza is not enabled',
+  'noffd':'An administrator can enable it in settings.','empty':'No models match',
+  'rate':'effective multiplier','save':'save','nooff':'No published list price to compare.',
+  'perM':'per 1M tokens',
+  'th.ctx':'context','ctx.unk':'n/a',
+  'ctx.title':'Context window','ctx.unkt':'Context window not published for this model',
+  'av.ok':'available','av.deg':'degraded','av.out':'out of stock',
+};
+let lang = 'zh';
+try { if (localStorage.getItem('lang') === 'en') lang = 'en'; } catch (e) {}
+const ZH = {};
+document.querySelectorAll('[data-i]').forEach(el => ZH[el.dataset.i] = el.textContent);
+ZH['ph'] = $('#q').placeholder;
+ZH['th.in'] = '输入'; ZH['th.out'] = '输出'; ZH['th.cw'] = '缓存写入';
+ZH['th.cr'] = '缓存读取'; ZH['th.disc'] = '折扣'; ZH['th.model'] = '模型';
+ZH['th.vendor'] = '厂商'; ZH['th.grp'] = '分组';
+ZH['mine'] = '本站价'; ZH['off'] = '官方价';
+ZH['f.group'] = '分组'; ZH['f.vendor'] = '厂商'; ZH['f.all'] = '全部';
+ZH['st.models'] = '个模型'; ZH['st.vendors'] = '家厂商'; ZH['st.groups'] = '个分组';
+ZH['st.cheapest'] = '最低输入价';
+ZH['copied'] = '模型名已复制'; ZH['err'] = '加载失败'; ZH['noff'] = '模型广场未启用';
+ZH['noffd'] = '管理员可在后台设置里开启。'; ZH['empty'] = '没有匹配的模型';
+ZH['rate'] = '实际倍率'; ZH['save'] = '省'; ZH['nooff'] = '该模型未公布官方价，不做对比。';
+ZH['perM'] = '每 100 万 tokens';
+ZH['th.ctx'] = '上下文'; ZH['ctx.unk'] = '未公布';
+ZH['ctx.title'] = '上下文窗口'; ZH['ctx.unkt'] = '该模型未公布上下文窗口';
+ZH['av.ok'] = '可用'; ZH['av.deg'] = '降级'; ZH['av.out'] = '未供货';
+const t = k => (lang === 'en' ? EN[k] : ZH[k]) || k;
+
+/* ---- 主题：与站内其它页共用 localStorage 的 'theme' 键 ------------------ */
+const MOON = '<path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/>';
+const SUN = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>';
+let dark = true;
+try {
+  const s = localStorage.getItem('theme');
+  dark = s ? s === 'dark' : !matchMedia('(prefers-color-scheme: light)').matches;
+} catch (e) { /* 隐私模式下访问 localStorage 会抛，用默认值 */ }
+function applyTheme() {
+  document.documentElement.classList.toggle('light', !dark);
+  $('#theme-ic').innerHTML = dark ? MOON : SUN;
+}
+applyTheme();
+$('#theme').onclick = () => {
+  dark = !dark; applyTheme();
+  try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch (e) {}
+};
+
+let toastT;
+function toast(m) {
+  const el = $('#toast'); el.textContent = m; el.classList.add('on');
+  clearTimeout(toastT); toastT = setTimeout(() => el.classList.remove('on'), 1700);
+}
+function esc(s) {
+  // 模型名与分组描述都来自数据库（管理员可改）。一律转义，不给存储型 XSS 留路。
+  return String(s).replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+/* 品牌标记：有内联 SVG 就用，没有就退化成品牌色首字母块 */
+function icon(v, cls) {
+  const svg = HAS_SVG ? window.vendorIconSVG(v, 20) : '';
+  return svg
+    ? '<span class="' + cls + '">' + svg + '</span>'
+    : '<span class="' + cls + ' mono">' + esc(vmOf(v)) + '</span>';
+}
+
+/* ---- 数据 ---------------------------------------------------------------
+   价格口径（我实测核对过，写错就是在钱上骗人）：
+     本站实收 = pricing.<字段> × group.rate_multiplier × 1e6（换算成每 1M）。
+   折扣在**分组级** rate_multiplier 上（当前两组都是 0.08），pricing.* 本身
+   多数与 official_pricing.* 数值相同（倍率 1.000）。直接显示 pricing.input_price
+   会把官方价当本站价 —— 那是最危险的一种错。
+
+   但**不能**因此把折扣写成 1 - rate_multiplier。2026-08-06 实测：38 个有官方价
+   的模型里有 6 个 pricing.* ≠ official_pricing.*（gpt-5.6-luna 5 倍、gpt-5.6-terra
+   1.25 倍、claude-haiku-4-5[-20251001]-thinking 4 倍、claude-sonnet-5-thinking
+   0.667 倍、gpt-4o 输入 2 倍/输出 2.5 倍）。这些模型的真实折扣分别是 60% / 90% /
+   68% / 94.7% / 84~80%，若一律标 92% 就是虚标。所以折扣**逐模型按
+   1 - 本站价 ÷ 官方价**实算，输入与输出折扣不一致时显示区间。
+
+   另有一处生产数据自相矛盾：分组描述写「按官方价的 5%」「10%」，而
+   rate_multiplier 是 0.08。这里原样显示描述，但把实际倍率单独标出来，
+   不让读者把描述里的百分比当成真实费率。
+   ---------------------------------------------------------------------- */
+let MODELS = [], GROUPS = [], DESC = '';
+/* 默认排序是 'recent'（最新在前），与 #s-recent 按钮的 aria-pressed="true" 对应 */
+let fGroup = null, fVendor = null, view = 'card', sort = 'recent', q = '';
+
+const perM = (v, mult) => (v == null ? null : v * 1e6 * mult);
+const fmtUSD = (v) => {
+  if (v == null) return '—';
+  if (v === 0) return '$0';
+  // 小数位按量级选，避免 4.0000000000000003e-7 这种浮点残渣直接显示给用户
+  const d = v >= 1 ? 2 : v >= 0.01 ? 4 : 6;
+  return '$' + v.toFixed(d);
+};
+/* 单项折扣。官方价缺失或为 0 时返回 null —— 不编造对比，也绝不产出 NaN。 */
+const discOf = (site, off) =>
+  (site != null && off != null && off > 0) ? 1 - site / off : null;
+/* 折扣百分比文案。输入与输出折扣取整后不同则显示区间（gpt-4o 就是 80~84%）。 */
+function discPct(m) {
+  const xs = [discOf(m.inp, m.oInp), discOf(m.out, m.oOut)].filter(v => v != null && v > 0);
+  if (!xs.length) return null;
+  const r = v => Math.round(v * 100);
+  const lo = r(Math.min.apply(null, xs)), hi = r(Math.max.apply(null, xs));
+  return lo === hi ? hi + '%' : lo + '~' + hi + '%';
+}
+
+function fail(html) { $('#out').innerHTML = '<div class="msg glass">' + html + '</div>'; }
+
+/* ---- 分组名与描述的清洗 -------------------------------------------------
+   生产库里的分组名/描述是给后台管理员看的，直接印到公开页上有两个问题：
+   1. 名字与描述里带着上游平台名 —— 对外页面不提上游是谁。
+   2. 描述写「按官方价的 5%」「10%」，而同一条数据的 rate_multiplier 是 0.08，
+      三个数互相矛盾。复述哪一个都是错的，所以带百分比的整句一并去掉，实际倍率
+      由 .grate 那行单独显示（现拉的真值）。
+   顺带去掉「绝无瑕疵报错」这类绝对化承诺，以及点名第三方工具的句子。
+   清洗只影响**显示**，筛选与统计仍按原始 name 走（chip 的 data-g 是原名）。 */
+const SCRUB_WORDS = /kiro|codewhisperer|bedrock|aws|amazon/i;
+const SCRUB_CLAIMS = /绝无|无瑕疵|不推荐|claudecode|codex/i;
+function scrubName(s) {
+  const out = String(s || '')
+    .replace(/\bkiro\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  // 整条被清空时保留原名，宁可露出也不要一个无名分组（筛选器会变成空按钮）
+  return out || String(s || '');
+}
+/* 把一行切成小句。手写而不用带后行断言的正则（/(?<=…)/ 到 Safari 16.4 才支持，
+   这页要在旧 iOS Safari 上跑）。终止标点跟在**前**一句尾部，'·' 作分隔符起**新**
+   一句 —— 描述里 '·' 是并列项之间的分隔，跟前一项黏在一起会切错。 */
+function segments(line) {
+  const END = '。！？；;，,、';
+  const out = [];
+  let buf = '';
+  for (const ch of line) {
+    if (ch === '·') { if (buf) out.push(buf); buf = ch; continue; }
+    buf += ch;
+    if (END.indexOf(ch) >= 0) { out.push(buf); buf = ''; }
+  }
+  if (buf) out.push(buf);
+  return out;
+}
+const keepSeg = seg => !/\d+(\.\d+)?%/.test(seg) &&
+  !SCRUB_WORDS.test(seg) && !SCRUB_CLAIMS.test(seg);
+function scrubDesc(s) {
+  const kept = String(s || '')
+    .split(/\n/)
+    // 逐句判定而不是整行丢：带百分比那句同行里还挂着正常的模型清单
+    .map(line => {
+      const segs = segments(line);
+      const keep = segs.map(keepSeg);
+      return segs.map((seg, i) => {
+        if (!keep[i]) return '';
+        // 保留的这句末尾那个逗号原本是连着**下一句**的，下一句被删了它就成了
+        // 悬空标点（「含 20%读取缓存」被删后剩「Sonnet 5， -thinking」）。
+        return (i + 1 < segs.length && !keep[i + 1])
+          ? seg.replace(/[，,、;；]\s*$/, '') : seg;
+      }).join('').trim();
+    })
+    .filter(Boolean)
+    .join(' ');
+  /* 换行合成空格再统一收尾：库里的换行是管理员在后台文本框里按出来的，
+     位置随他当时的窗口宽度，跟这一页 240px 侧栏的换行点没关系 —— 保留就会
+     出现「DeepSeek /」这种断在斜杠后的孤行。交给浏览器按实际宽度折。
+     收尾还要清掉切句后落单的标点（行首行尾的 · 、 / 之类）。 */
+  return kept
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^[\s，,。、·;；/]+/, '')
+    .replace(/[\s，,、·;；/]+$/, '')
+    .trim();
+}
+
+async function load() {
+  let r;
+  try {
+    r = await fetch('/api/v1/model-plaza', {cache:'no-store'});
+  } catch (e) {
+    return fail('<b>' + esc(t('err')) + '</b>' + esc(String(e && e.message || e)));
+  }
+  if (r.status === 404) {
+    return fail('<b>' + esc(t('noff')) + '</b>' + esc(t('noffd')) +
+      '<br><code>model_plaza_enabled = true</code>');
+  }
+  if (!r.ok) return fail('<b>' + esc(t('err')) + '</b>HTTP ' + r.status);
+  let j;
+  try { j = await r.json(); } catch (e) { return fail('<b>' + esc(t('err')) + '</b>JSON'); }
+
+  const d = (j && j.data) || j || {};
+  DESC = d.description || '';
+  const gs = Array.isArray(d.groups) ? d.groups : [];
+  GROUPS = gs.map(g => ({
+    // name 是筛选用的原始键（要和 models 里的分组对得上），disp 才是拿去显示的
+    name: g.name || '', disp: scrubName(g.name || ''), desc: scrubDesc(g.description || ''),
+    mult: typeof g.rate_multiplier === 'number' ? g.rate_multiplier : 1,
+  }));
+  const gdisp = {};
+  GROUPS.forEach(g => { gdisp[g.name] = g.disp; });
+  MODELS = [];
+  gs.forEach(g => {
+    const mult = typeof g.rate_multiplier === 'number' ? g.rate_multiplier : 1;
+    (Array.isArray(g.models) ? g.models : []).forEach(m => {
+      const p = m.pricing || {}, o = m.official_pricing || null;
+      const name = m.name || '-';
+      const v = vendorOf(name);
+      MODELS.push({
+        name, vendor: v, vc: vcOf(v), group: g.name || '', mult,
+        groupDisp: gdisp[g.name || ''] || scrubName(g.name || ''),
+        // 版本信息在装载时解析一次，排序时不必对 43 个名字反复跑正则
+        ver: verOf(name),
+        // 上下文窗口按名字查表（接口不给这个字段）；查不到是 null → 显示"未公布"
+        ctx: ctxOf(name),
+        // 可用性只在接口真给了状态字段时才非 null，当前恒为 null
+        avail: availOf(m),
+        think: /-thinking$/.test(name),
+        inp: perM(p.input_price, mult), out: perM(p.output_price, mult),
+        cw: perM(p.cache_write_price, mult), cr: perM(p.cache_read_price, mult),
+        // 官方价不乘倍率 —— 倍率是本站折扣，官方价按原样列出来做对照
+        oInp: o ? perM(o.input_price, 1) : null, oOut: o ? perM(o.output_price, 1) : null,
+        oCw: o ? perM(o.cache_write_price, 1) : null, oCr: o ? perM(o.cache_read_price, 1) : null,
+        hasOff: !!(o && (o.input_price != null || o.output_price != null)),
+      });
+    });
+  });
+  if (!MODELS.length) return fail('<b>' + esc(t('empty')) + '</b>');
+  render();
+}
+
+function counts(key) {
+  const c = {};
+  MODELS.forEach(m => { c[m[key]] = (c[m[key]] || 0) + 1; });
+  return c;
+}
+/* 厂商列表：按模型数降序，同数按 VENDOR_ORDER，未知厂商排最后 —— 顺序稳定 */
+function vendorList() {
+  const c = counts('vendor');
+  return Object.keys(c).map(v => ({v, n: c[v]})).sort((a, b) =>
+    b.n - a.n ||
+    ((VENDOR_ORDER.indexOf(a.v) + 1 || 99) - (VENDOR_ORDER.indexOf(b.v) + 1 || 99)) ||
+    a.v.localeCompare(b.v));
+}
+
+/* 宽屏（侧栏还在左侧那一列时）分组描述默认展开；窄屏折起来。
+   纯 CSS 控制不了 <details open>，所以在这里按 matchMedia 取一次。
+   900 这个数必须跟 CSS 里侧栏收成横向筛选条的断点一致。 */
+const WIDE = !matchMedia('(max-width:900px)').matches;
+
+function renderShell() {
+  if (DESC) { const el = $('#desc'); el.hidden = false; el.textContent = DESC; }
+
+  // 「43 个模型 · 本站价与官方价并列」—— 个数由数据算出，不写死
+  const em = k => '<em>' + esc(t(k)) + '</em>';
+  const sep = '<span class="sep">·</span>';
+  $('#tally').innerHTML =
+    '<span><b>' + MODELS.length + '</b> ' + esc(t('st.models')) + '</span>' + sep +
+    '<span>' + (lang === 'en'
+      ? em('mine') + ' next to the ' + em('off')
+      : em('mine') + '与' + em('off') + '并列') + '</span>' + sep +
+    '<span>' + esc(t('perM')) + '</span>';
+
+  const cheapest = MODELS.reduce((a, m) =>
+    (m.inp != null && m.inp > 0 && (a == null || m.inp < a)) ? m.inp : a, null);
+  const svg = p => '<svg viewBox="0 0 24 24">' + p + '</svg>';
+  /* 四张统计卡的强调色改走 CSS 变量而不是写死的十六进制 —— 写死的话切亮色主题
+     时这四个色不会跟着压深（原件那四个紫/橙/绿/蓝在白底上都不够对比度）。
+     取色顺序对上品牌渐变的两端：模型数用蓝，厂商数用紫。 */
+  const stats = [
+    {c:'var(--accent)', v:MODELS.length, l:t('st.models'),
+     p:'<path d="M12 2 2 7l10 5 10-5-10-5Z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/>'},
+    {c:'var(--purple-ink)', v:vendorList().length, l:t('st.vendors'),
+     p:'<path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/><path d="M9 21v-6h6v6"/>'},
+    {c:'var(--success)', v:GROUPS.length, l:t('st.groups'),
+     p:'<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/>'},
+    {c:'var(--warn)', v:fmtUSD(cheapest), l:t('st.cheapest'),
+     p:'<path d="M22 7 13.5 15.5l-5-5L2 17"/><path d="M16 7h6v6"/>'},
+  ];
+  $('#stats').innerHTML = stats.map(s =>
+    '<div class="stat" style="background:color-mix(in srgb,' + s.c + ' 8%,transparent);' +
+    'border:1px solid color-mix(in srgb,' + s.c + ' 12%,transparent)">' +
+    '<div class="stat-ic" style="background:color-mix(in srgb,' + s.c + ' 12%,transparent);color:' +
+    s.c + '">' + svg(s.p) + '</div><div><b>' + esc(String(s.v)) + '</b><span>' +
+    esc(s.l) + '</span></div></div>').join('');
+
+  // 厂商 pill：六家品牌色 + 内联品牌标记 + 计数
+  $('#pills').innerHTML = vendorList().map(({v, n}) => {
+    const on = fVendor === v, col = vcOf(v);
+    const sty = on ? ' style="--vc:' + col + ';border-color:color-mix(in srgb,' + col +
+      ' 55%,transparent);background:color-mix(in srgb,' + col + ' 15%,transparent);' +
+      'box-shadow:0 2px 8px color-mix(in srgb,' + col + ' 25%,transparent)"'
+      : ' style="--vc:' + col + '"';
+    return '<button class="pill" data-v="' + esc(v) + '" aria-pressed="' + on + '"' + sty + '>' +
+      icon(v, 'pill-dot') +
+      '<span class="pill-n"' + (on ? ' style="color:' + col + '"' : '') + '>' + esc(vlOf(v)) +
+      '</span><span class="pill-c">' + n + '</span></button>';
+  }).join('');
+  $('#pills').querySelectorAll('.pill').forEach(b => b.onclick = () => {
+    fVendor = fVendor === b.dataset.v ? null : b.dataset.v; render();
+  });
+
+  const gc = counts('group');
+  /* .fbar 只包两组 chip：900 以下它变成单行横滚的筛选条，分组说明必须留在
+     它外面 —— 说明是多行文本，塞进横滚容器里会被拉成一条极长的行。 */
+  $('#side').innerHTML = '<div class="fbar">' +
+    // 厂商筛选：六家都在，各带品牌色、标记与计数
+    '<div class="fsec"><span class="fsec-t">' + esc(t('f.vendor')) + '</span><div class="chips">' +
+    '<button class="chip" data-v="" aria-pressed="' + (fVendor === null) + '">' +
+      '<span class="chip-l">' + esc(t('f.all')) + '</span>' +
+      '<span class="chip-c">' + MODELS.length + '</span></button>' +
+    vendorList().map(({v, n}) =>
+      '<button class="chip v" data-v="' + esc(v) + '" aria-pressed="' + (fVendor === v) +
+      '" style="--vc:' + vcOf(v) + '">' + icon(v, 'chip-i') +
+      '<span class="chip-l">' + esc(vlOf(v)) + '</span>' +
+      '<span class="chip-c">' + n + '</span></button>').join('') +
+    '</div></div>' +
+    '<div class="fsec"><span class="fsec-t">' + esc(t('f.group')) + '</span><div class="chips">' +
+    '<button class="chip" data-g="" aria-pressed="' + (fGroup === null) + '">' +
+      '<span class="chip-l">' + esc(t('f.all')) + '</span>' +
+      '<span class="chip-c">' + MODELS.length + '</span></button>' +
+    GROUPS.map(g =>
+      '<button class="chip" data-g="' + esc(g.name) + '" aria-pressed="' + (fGroup === g.name) + '">' +
+      '<span class="chip-l">' + esc(g.disp) + '</span>' +
+      '<span class="chip-r">' + g.mult + 'x</span>' +
+      '<span class="chip-c">' + (gc[g.name] || 0) + '</span></button>').join('') +
+    '</div></div></div>' +
+    // 分组描述（已清洗，见 scrubDesc）+ 现拉的实际倍率单独一行。
+    // 窄屏时筛选条在内容上方，这几段描述会把首张卡片推远，所以折起来（宽屏默认展开）。
+    GROUPS.filter(g => g.desc).map(g =>
+      '<details class="fsec gnote"' + (WIDE ? ' open' : '') + '>' +
+        '<summary class="fsec-t">' + esc(g.disp) + '</summary>' +
+        '<div class="gdesc">' + esc(g.desc) + '</div>' +
+        '<div class="grate">' + esc(t('rate')) + ' ' + g.mult + 'x</div>' +
+      '</details>').join('');
+  $('#side').querySelectorAll('.chip[data-g]').forEach(b => b.onclick = () => {
+    fGroup = b.dataset.g === '' ? null : (fGroup === b.dataset.g ? null : b.dataset.g);
+    render();
+  });
+  $('#side').querySelectorAll('.chip[data-v]').forEach(b => b.onclick = () => {
+    fVendor = b.dataset.v === '' ? null : (fVendor === b.dataset.v ? null : b.dataset.v);
+    render();
+  });
+}
+
+/* SORT-RECENT:BEGIN — 版本感知的「最新在前」排序
+   ---------------------------------------------------------------------------
+   为什么不能只按日期后缀排：43 个模型里只有 16 个带日期（claude-opus-4-7-20260416
+   这类），27 个没有（claude-opus-5 / gpt-5.6-luna / glm-5 …）。按日期排会让六成
+   模型挤在末尾。所以主键是**版本号元组**，日期只在同版本时做细分。
+
+   为什么不硬编码一张 43 个模型的顺序表：这页的数据是运行时从 API 拉的，上游一加
+   新模型（claude-opus-6、gpt-5.7-…）硬编码表就会把它甩到列表最后 —— 恰好与
+   「最新在最前」相反。纯语义解析下新版本号自动排到前面，无需改代码。
+
+   跨厂商怎么排（这是个取舍，理由写在这）：**先按厂商分块，块内按新旧**。
+   「claude-opus-5 比 glm-5 新」是没有意义的比较 —— 版本号只在同一家的命名体系内
+   可比，5 > 4.8 对 Anthropic 成立，跨家则是拿两套无关的编号硬凑。卡片视图是平铺
+   的，必须给出全局序，于是用厂商块拼出全局序：厂商块的次序取页面已有的
+   VENDOR_ORDER（Anthropic 在首位），未知厂商按字母排在最后。这样既满足运维方
+   「opus5 之类排最前面」的诉求，又不假装跨厂商的新旧可比。
+
+   兜底：认不出版本号的模型（版本元组为空）排在**本厂商块内的最后**，块内按名称
+   字母序 —— 确定性的，不会每次刷新乱跳。 */
+
+/* 能力档次：仅在厂商与版本号完全相同时用于定序（claude-opus-5 与 claude-sonnet-5
+   同为 [5]，旗舰 opus 在前）。不在此表的档次并列，靠后面的名称字母序兜底。 */
+const TIER_ORDER = ['opus', 'sonnet', 'haiku'];
+
+/* 从模型名解析出排序用的版本信息。纯函数，只看名字，不依赖任何模型清单。
+     ns    版本号元组，用于逐段数值比较：opus-5 → [5]，opus-4-8 → [4,8]，
+           3-7-sonnet → [3,7]，gpt-5.6-luna → [5,6]，minimax-m2.5 → [2,5]
+     date  日期后缀 YYYYMMDD（无则 0）
+     think 是否 -thinking 变体
+     tier  能力档次在 TIER_ORDER 中的位次
+     stem  去掉日期与 -thinking 之后的名字，让同一基础型号的变体聚在一起 */
+function verOf(name) {
+  const raw = String(name).toLowerCase();
+  const think = /-thinking$/.test(raw);
+  // 先剥 -thinking 再剥日期：claude-opus-4-5-20251101-thinking 两者都有，
+  // 顺序反了就会把日期留在名字里，变体与基础型号的 stem 对不上。
+  let s = raw.replace(/-thinking$/, '');
+  const dm = s.match(/-(\d{8})$/);          // 8 位日期后缀，如 -20260416
+  const date = dm ? +dm[1] : 0;
+  if (dm) s = s.slice(0, -dm[0].length);
+
+  const ns = [];
+  let tier = TIER_ORDER.length;
+  s.split('-').forEach(tok => {
+    const ti = TIER_ORDER.indexOf(tok);
+    if (ti >= 0) { tier = Math.min(tier, ti); return; }
+    // 纯数字段（opus-4-8 的 4 和 8），或带小数点的段（5.6 / m2.5 → 2,5）。
+    // 形如 4o 的段取前面的数字，字母尾巴忽略：gpt-4o 记作 [4]。
+    const nm = tok.match(/^[a-z]*?(\d+(?:\.\d+)*)[a-z]*$/);
+    if (nm) nm[1].split('.').forEach(p => ns.push(+p));
+  });
+  return {ns, date, think, tier, stem: s};
+}
+
+/* 数值元组比较，降序（新的在前）。逐段比，缺的段当 -1：
+   [4,1] > [4] —— claude-opus-4-1 比 claude-opus-4 新。 */
+function cmpNs(a, b) {
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const x = i < a.length ? a[i] : -1, y = i < b.length ? b[i] : -1;
+    if (x !== y) return y - x;
+  }
+  return 0;
+}
+
+/* 「最新」比较器。分层键，每层都是确定性的，不存在等价乱跳。 */
+function cmpRecent(a, b) {
+  const va = a.ver || verOf(a.name), vb = b.ver || verOf(b.name);
+  // 1) 厂商块：VENDOR_ORDER 在前，未知厂商排最后并按名称字母序
+  const ra = VENDOR_ORDER.indexOf(a.vendor), rb = VENDOR_ORDER.indexOf(b.vendor);
+  const ka = ra < 0 ? VENDOR_ORDER.length : ra, kb = rb < 0 ? VENDOR_ORDER.length : rb;
+  if (ka !== kb) return ka - kb;
+  if (ka === VENDOR_ORDER.length && a.vendor !== b.vendor)
+    return String(a.vendor).localeCompare(String(b.vendor));
+  // 2) 认不出版本号的排在本厂商块末尾
+  const ea = va.ns.length === 0, eb = vb.ns.length === 0;
+  if (ea !== eb) return ea ? 1 : -1;
+  // 3) 版本号降序
+  const c = cmpNs(va.ns, vb.ns);
+  if (c) return c;
+  // 4) 同版本：能力档次（opus > sonnet > haiku）
+  if (va.tier !== vb.tier) return va.tier - vb.tier;
+  // 5) 同档次不同基础型号（gpt-5.6 的 luna/sol/terra）：名称字母序，稳定
+  if (va.stem !== vb.stem) return va.stem.localeCompare(vb.stem);
+  // 6) 同一基础型号的变体：先无日期的别名（它总是指向最新快照），再按日期降序。
+  //    这两步都在 stem 相同的前提下，所以 -thinking 一定紧跟其基础型号，不散落
+  if (va.date !== vb.date) {
+    if (!va.date) return -1;
+    if (!vb.date) return 1;
+    return vb.date - va.date;
+  }
+  // 7) 基础型号在其 -thinking 变体之前
+  if (va.think !== vb.think) return va.think ? 1 : -1;
+  return a.name.localeCompare(b.name);
+}
+/* SORT-RECENT:END */
+
+function filtered() {
+  let r = MODELS.slice();
+  if (fGroup) r = r.filter(m => m.group === fGroup);
+  if (fVendor) r = r.filter(m => m.vendor === fVendor);
+  if (q) {
+    const k = q.toLowerCase();
+    r = r.filter(m => m.name.toLowerCase().indexOf(k) >= 0 ||
+      vlOf(m.vendor).toLowerCase().indexOf(k) >= 0);
+  }
+  r.sort(sort === 'price'
+    ? (a,b) => (a.inp == null) - (b.inp == null) || (a.inp || 0) - (b.inp || 0) ||
+               a.name.localeCompare(b.name)
+    : sort === 'name'
+    ? (a,b) => a.name.localeCompare(b.name)
+    : cmpRecent);
+  return r;
+}
+
+const CP = '<svg viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+
+/* 价格行：本站价一列（accent 主导）+ 官方价一列（划掉、弱化）。
+   没有官方价的模型走 solo 两列，不留空格子，也不显示 NaN。 */
+function pxRow(label, mine, off, hasOff, cls) {
+  return '<div class="px-row' + (cls ? ' ' + cls : '') + '"><dt>' + esc(label) + '</dt>' +
+    '<dd class="mine' + (cls ? ' c' : '') + '">' + fmtUSD(mine) + '</dd>' +
+    (hasOff ? '<dd class="off">' + fmtUSD(off) + '</dd>' : '') + '</div>';
+}
+
+/* 上下文窗口标签。查不到窗口时显示"未公布"而不是省掉这个标签 ——
+   省掉的话读者分不清"这个模型窗口小"与"这里没数据"。 */
+function ctxTag(m) {
+  const l = ctxLabel(m.ctx);
+  return l
+    ? '<span class="tag ctx" title="' + esc(t('ctx.title')) + '">' + esc(l) + '</span>'
+    : '<span class="tag ctx unk" title="' + esc(t('ctx.unkt')) + '">' + esc(t('ctx.unk')) + '</span>';
+}
+/* 可用性标签。m.avail 恒为 null 时（当前的情况）这里什么都不渲染。 */
+function avTag(m) {
+  return m.avail
+    ? '<span class="tag av ' + m.avail + '">' + esc(t('av.' + m.avail)) + '</span>'
+    : '';
+}
+
+function cardHTML(m, i) {
+  const pct = discPct(m);
+  return '<article class="card" style="--vc:' + m.vc + ';animation-delay:' +
+    Math.min(i * 0.03, 0.4).toFixed(2) + 's">' +
+    '<div class="card-hd">' +
+      icon(m.vendor, 'card-ic') +
+      '<div class="card-nm"><b>' + esc(m.name) + '</b><span>' + esc(vlOf(m.vendor)) + '</span></div>' +
+      '<button class="card-cp" data-cp="' + esc(m.name) + '" aria-label="' +
+        esc(lang === 'en' ? 'Copy model name' : '复制模型名') + '">' + CP + '</button>' +
+    '</div>' +
+    '<div class="px">' +
+      '<div class="px-hd"><span class="k mine">' + esc(t('mine')) + '</span>' +
+        (m.hasOff ? '<span class="k sl">' + esc(t('off')) + '</span>' : '') +
+        '<span class="sp"></span>' +
+        (pct ? '<span class="px-disc">' + esc(t('save') + ' ' + pct) + '</span>' : '') +
+      '</div>' +
+      '<dl class="px-g' + (m.hasOff ? '' : ' solo') + '">' +
+        pxRow(t('th.in'), m.inp, m.oInp, m.hasOff) +
+        pxRow(t('th.out'), m.out, m.oOut, m.hasOff) +
+        (m.cw != null ? pxRow(t('th.cw'), m.cw, m.oCw, m.hasOff, 'cache') : '') +
+        (m.cr != null ? pxRow(t('th.cr'), m.cr, m.oCr, m.hasOff, 'cache') : '') +
+      '</dl>' +
+      (m.hasOff ? '' : '<div class="px-note">' + esc(t('nooff')) + '</div>') +
+    '</div>' +
+    // 标签顺序按信息价值排：上下文窗口（卖点）→ 可用性 → 倍率 → thinking → 分组
+    '<div class="tags">' + ctxTag(m) + avTag(m) +
+      '<span class="tag">' + m.mult + 'x</span>' +
+      (m.think ? '<span class="tag think">thinking</span>' : '') +
+      '<span class="tag grp">' + esc(m.groupDisp) + '</span></div>' +
+  '</article>';
+}
+
+function tableHTML(rows) {
+  const th = (k, cls) => '<th scope="col"' + (cls ? ' class="' + cls + '"' : '') + '>' +
+    esc(t(k)) + '</th>';
+  return '<div class="tbl-wrap"><table><thead>' +
+    // 第一行把两组价格跨列分开，第二行才是具体项目。
+    // 模型名那一格**不能**并进 colspan：它要单独 sticky:left，跨列了就锁不住。
+    '<tr class="g"><th scope="col"></th><th scope="col" colspan="2"></th>' +
+      '<th scope="colgroup" colspan="4" class="mine grp-a">' + esc(t('mine')) + '</th>' +
+      '<th scope="colgroup" colspan="2" class="grp-b">' + esc(t('off')) + '</th>' +
+      '<th scope="col" colspan="2"></th></tr>' +
+    '<tr class="h">' + th('th.model') + th('th.vendor') + th('th.ctx', 'n') +
+      th('th.in', 'n mine grp-a') + th('th.out', 'n mine grp-a') +
+      th('th.cw', 'n mine grp-a') + th('th.cr', 'n mine grp-a') +
+      th('th.in', 'n grp-b') + th('th.out', 'n grp-b') +
+      th('th.disc', 'n') + th('th.grp') + '</tr></thead><tbody>' +
+    rows.map(m => {
+      const pct = discPct(m);
+      const o = v => m.hasOff
+        ? '<td class="n off grp-b">' + fmtUSD(v) + '</td>'
+        : '<td class="n dash grp-b">—</td>';
+      const cl = ctxLabel(m.ctx);
+      return '<tr><td class="m">' + esc(m.name) +
+        (m.think ? ' <span class="tag think">t</span>' : '') +
+        (m.avail ? ' <span class="tag av ' + m.avail + '">' +
+          esc(t('av.' + m.avail)) + '</span>' : '') + '</td>' +
+      '<td><span class="vd" style="--vc:' + m.vc + '">' + icon(m.vendor, 'vi') +
+        esc(vlOf(m.vendor)) + '</span></td>' +
+      '<td class="ctx n' + (cl ? '' : ' unk') + '">' + esc(cl || t('ctx.unk')) + '</td>' +
+      '<td class="n hi grp-a">' + fmtUSD(m.inp) + '</td>' +
+      '<td class="n hi grp-a">' + fmtUSD(m.out) + '</td>' +
+      '<td class="n grp-a">' + fmtUSD(m.cw) + '</td>' +
+      '<td class="n grp-a">' + fmtUSD(m.cr) + '</td>' +
+      o(m.oInp) + o(m.oOut) +
+      '<td class="n disc">' + (pct ? esc(pct) : '<span class="dash">—</span>') + '</td>' +
+      '<td class="m" style="color:var(--muted);font-size:11.4px">' + esc(m.groupDisp) + '</td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+function render() {
+  if (!MODELS.length) return;
+  renderShell();
+  const rows = filtered();
+  $('#count').textContent = rows.length + ' / ' + MODELS.length;
+  const out = $('#out');
+  if (!rows.length) {
+    out.innerHTML = '<div class="msg glass"><b>' + esc(t('empty')) + '</b></div>';
+    return;
+  }
+  out.innerHTML = view === 'card'
+    ? '<div class="grid">' + rows.map(cardHTML).join('') + '</div>'
+    : tableHTML(rows);
+
+  out.querySelectorAll('[data-cp]').forEach(b => b.onclick = async () => {
+    const v = b.dataset.cp;
+    try { await navigator.clipboard.writeText(v); }
+    catch (e) {
+      // 非 HTTPS 或权限被拒时 clipboard API 不可用，退回选中让用户自己按 ⌘C
+      const ta = document.createElement('textarea');
+      ta.value = v; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch (e2) {}
+      ta.remove();
+    }
+    toast(t('copied'));
+  });
+}
+
+/* ---- 控件 --------------------------------------------------------------- */
+let qT;
+$('#q').oninput = e => {
+  q = e.target.value.trim();
+  clearTimeout(qT); qT = setTimeout(render, 120);   // 去抖：43 个模型也别每键重排
+};
+/* 单选式按钮组，任意个数 —— 排序从两项变成三项后不再写死成一对 */
+function segRadio(pairs, set) {
+  const btns = pairs.map(([sel]) => $(sel));
+  btns.forEach((btn, i) => {
+    btn.onclick = () => {
+      set(pairs[i][1]);
+      btns.forEach((o, j) => o.setAttribute('aria-pressed', i === j ? 'true' : 'false'));
+      render();
+    };
+  });
+}
+segRadio([['#v-card','card'], ['#v-tbl','tbl']], v => view = v);
+segRadio([['#s-recent','recent'], ['#s-name','name'], ['#s-price','price']], s => sort = s);
+
+function applyLang() {
+  $('#lang-t').textContent = lang === 'en' ? 'EN' : 'ZH';
+  document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN';
+  document.querySelectorAll('[data-i]').forEach(el => { el.textContent = t(el.dataset.i); });
+  $('#q').placeholder = t('ph');
+  if (MODELS.length) render();
+}
+$('#lang').onclick = () => {
+  lang = lang === 'en' ? 'zh' : 'en';
+  try { localStorage.setItem('lang', lang); } catch (e) {}
+  applyLang();
+};
+if (lang === 'en') applyLang();
+
+load();
+</script>
+</body>
+</html>

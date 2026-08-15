@@ -1,0 +1,2354 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- 图标由 Caddy 的 (favicon) 片段就地服务，不在本目录下。
+     声明出来是为了让浏览器直接取 PNG，不必先去探测 /favicon.ico。 -->
+<!-- ?v=2 是刻意的：浏览器对 favicon 的缓存独立于普通资源、硬刷常常无效，
+     唯一可靠的强制刷新办法是换 URL（不同 URL = 不同缓存键）。文件本身没变。
+     同时显式声明 .ico —— 部分浏览器给标签页优先取 /favicon.ico，
+     只声明 png 时它们会去请求根路径的 ico，拿到的是缓存里的旧货。 -->
+<link rel="icon" type="image/png" sizes="256x256" href="/favicon.png?v=2">
+<link rel="icon" type="image/x-icon" sizes="16x16 32x32 48x48" href="/favicon.ico?v=2">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">
+<title>SkiAPI — Anthropic 协议兼容网关</title>
+<style>
+/* ============================================================================
+   设计令牌
+   ----------------------------------------------------------------------------
+   蓝色取自 favicon 的真实像素（深 #000078 → 主 #0048d8/#0060f0 → 亮 #00c0f0），
+   所以标签页图标和页面终于是同一个色系。
+
+   青绿沿用了 sub2api 后台的 #2dd4bf，但**降级为信号色**：只用在"活的数据"上
+   —— 延迟数字、200 状态、在线心跳。它不再是装饰色，出现即表示"这个数是真的"。
+
+   陶土色 clay 是 Anthropic 品牌色，只在与 Claude 直接相关的元素上出现。
+   ========================================================================= */
+:root{
+  /* 品牌蓝阶 */
+  --b-950:#000078; --b-900:#0030c0; --b-700:#0048d8; --b-600:#0060f0;
+  --b-500:#0078f0; --b-400:#0090f0; --b-300:#00c0f0;
+  /* 信号色：仅用于实时数据 */
+  --sig:#2dd4bf; --sig-soft:#5eead4;
+  /* Anthropic 陶土色，仅用于 Claude 相关 */
+  --clay:#cc785c;
+  /* 暗色底：偏蓝的近黑，让它落在蓝色家族里而不是中性灰 */
+  --bg:#070b14; --bg-soft:#0a1020; --surface:rgba(255,255,255,.026);
+  --surface-2:rgba(255,255,255,.045);
+  --line:rgba(255,255,255,.07); --line-lit:rgba(0,120,240,.28);
+  --fg:#eef3fb; --fg-mid:#93a4c4; --fg-dim:#5d6f92;
+  /* 字体：不加载 webfont —— 单文件自托管页面要么依赖 CDN（CSP 不允许），
+     要么内嵌字体文件（体积翻倍）。系统栈在两个平台上都够好。 */
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,"Cascadia Code","Fira Code",monospace;
+  /* 圆角：卡片 8、面板 10、标签全圆。取自 Anthropic(8) 与 Vercel(6) 的区间 */
+  --r-sm:6px; --r:8px; --r-lg:10px; --r-xl:14px; --r-full:999px;
+  /* 缓动：swift 末值 1.1 会轻微过冲（Vercel 的手法），用于交互反馈；
+     glide 无过冲（Linear 的曲线），用于入场揭示。 */
+  --swift:cubic-bezier(.175,.885,.32,1.1);
+  --glide:cubic-bezier(.25,.46,.45,.94);
+  /* 按压/离手要"到位就停"，不能回弹 —— 回弹在按钮上读作廉价。
+     这条曲线末段快速收敛，没有过冲。 */
+  --out:cubic-bezier(.2,0,0,1);
+  /* 渐变只留给 h1 里那一个强调词。按钮、卡片、进度条全部改用实色 + 分层阴影。 */
+  --grad:linear-gradient(135deg,var(--b-700),var(--b-400) 55%,var(--b-300));
+}
+html:not(.dark){
+  --bg:#fbfcfe; --bg-soft:#f2f6fc; --surface:rgba(10,20,40,.028);
+  --surface-2:rgba(10,20,40,.05);
+  --line:rgba(8,20,45,.09); --line-lit:rgba(0,96,240,.3);
+  --fg:#08101f; --fg-mid:#47597a; --fg-dim:#75879f;
+  --sig:#0d9488; --sig-soft:#14b8a6;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{
+  background:var(--bg);color:var(--fg);font-family:var(--sans);
+  -webkit-font-smoothing:antialiased;line-height:1.6;overflow-x:hidden;
+  transition:background .4s var(--glide),color .4s var(--glide);
+}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+.wrap{max-width:1140px;margin:0 auto;padding:0 24px}
+section{position:relative;z-index:1}
+::selection{background:rgba(0,120,240,.3)}
+
+/* ---- 字号阶梯 ------------------------------------------------------------
+   五个参考站的共同做法：字重压低 + 负字距随字号放大。
+   Vercel 到 -6%、Codex -3%、Linear/OpenRouter -2.2~2.5%。这里取 -4% 起。 */
+h1{font-size:clamp(2.4rem,5.4vw,4.2rem);font-weight:500;letter-spacing:-.04em;line-height:1.05}
+h2{font-size:clamp(1.6rem,3vw,2.3rem);font-weight:500;letter-spacing:-.03em;line-height:1.15}
+h3{font-size:1.02rem;font-weight:600;letter-spacing:-.011em}
+.mono{font-family:var(--mono);font-variant-ligatures:none}
+
+/* ---- 环境光层 ------------------------------------------------------------
+   Apple HIG 讲材质要"按语义选，不按呈现的颜色选"。这里的语义是深度：
+   光球只负责把 hero 与下方内容分层，所以只在 hero 区可见、透明度极低。 */
+.ambient{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+.orb{position:absolute;border-radius:50%;filter:blur(100px);opacity:.42}
+.orb-1{top:-200px;right:-120px;width:540px;height:540px;
+  background:radial-gradient(circle,rgba(0,96,240,.3),transparent 70%)}
+.orb-2{top:36%;left:-220px;width:480px;height:480px;
+  background:radial-gradient(circle,rgba(0,192,240,.13),transparent 70%)}
+.orb-3{top:8%;left:44%;width:360px;height:360px;
+  background:radial-gradient(circle,rgba(0,0,120,.3),transparent 72%)}
+html:not(.dark) .orb{opacity:.3}
+.grid-bg{position:absolute;inset:0;
+  background-image:linear-gradient(rgba(120,160,255,.05) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(120,160,255,.05) 1px,transparent 1px);
+  background-size:56px 56px;
+  mask-image:radial-gradient(ellipse 75% 55% at 50% 0%,#000 30%,transparent 75%);
+  -webkit-mask-image:radial-gradient(ellipse 75% 55% at 50% 0%,#000 30%,transparent 75%)}
+
+/* ---- 导航 --------------------------------------------------------------- */
+#nav{position:sticky;top:0;z-index:50;
+  background:color-mix(in srgb,var(--bg) 78%,transparent);
+  backdrop-filter:blur(18px) saturate(1.6);-webkit-backdrop-filter:blur(18px) saturate(1.6);
+  border-bottom:1px solid transparent;transition:border-color .3s var(--glide)}
+#nav.stuck{border-bottom-color:var(--line)}
+.nav-in{display:flex;align-items:center;justify-content:space-between;height:60px;gap:16px}
+.logo{display:flex;align-items:center;gap:9px;font-weight:600;font-size:15.5px;letter-spacing:-.015em}
+/* 站点标记用真图片。之前是 CSS 画的一个字母"S"占位，所以页面里根本
+   看不到品牌图标 —— 标签页有、内容区没有，就是这个原因。 */
+.logo-mark{width:25px;height:25px;border-radius:7px;display:block;object-fit:contain}
+.nav-actions{display:flex;align-items:center;gap:7px}
+
+/* ---- 图标 ---------------------------------------------------------------
+   currentColor 让图标跟随文字色，尺寸用 em 让它跟随字号 —— 这样一个 .ico
+   规则就够用，不必为每个位置写一遍尺寸。 */
+.ico{width:1em;height:1em;flex:none;fill:none;stroke:currentColor;stroke-width:2;
+  stroke-linecap:round;stroke-linejoin:round;vertical-align:-.125em}
+.ico-sm{width:.86em;height:.86em}
+.ico-lg{width:1.15em;height:1.15em}
+
+/* ---- 按钮 ---------------------------------------------------------------
+   实色填充 + 分层阴影，**不用渐变**。
+   渐变按钮是 AI 生成页面最典型的特征之一，而且它掩盖了真正让按钮"可按"的
+   东西：顶部一道 1px 的内高光（模拟受光面）+ 底部一道暗投影（模拟离地）。
+   按下时高光收掉、投影压扁、整体下沉 1px —— 这才是触感的来源。
+
+   边框一律用 inset box-shadow 而不是 border：不占布局盒模型，
+   hover 改变粗细不会引起 1px 的位置抖动。
+
+   时长按角色分层，不是全站一个 .3s：
+     按压反馈 90ms（要跟手）· 悬停 180ms · 位移 220ms。 */
+.btn{display:inline-flex;align-items:center;gap:7px;height:35px;padding:0 15px;
+  border-radius:var(--r);font-size:13.5px;font-weight:500;letter-spacing:-.008em;
+  white-space:nowrap;
+  transition:background .18s var(--glide),color .18s var(--glide),
+             box-shadow .18s var(--glide),transform .09s var(--out)}
+.btn-ghost{color:var(--fg-mid)}
+.btn-ghost:hover{color:var(--fg);background:var(--surface-2)}
+.btn-solid{background:var(--b-600);color:#fff;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.22),
+             0 1px 1px rgba(2,8,20,.5),
+             0 2px 6px -1px rgba(2,8,20,.4)}
+.btn-solid:hover{background:var(--b-500);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.26),
+             0 1px 1px rgba(2,8,20,.5),
+             0 4px 12px -2px rgba(0,96,240,.45)}
+.btn-solid:active{transform:translateY(1px);background:var(--b-700);
+  box-shadow:inset 0 1px 2px rgba(2,8,20,.45)}
+.btn-line{box-shadow:inset 0 0 0 1px var(--line);color:var(--fg)}
+.btn-line:hover{box-shadow:inset 0 0 0 1px var(--line-lit);background:var(--surface)}
+.btn-line:active{transform:translateY(1px);background:var(--surface-2)}
+.btn-lg{height:43px;padding:0 21px;font-size:14.5px;border-radius:var(--r-lg)}
+.icon-btn{width:33px;height:33px;border-radius:var(--r);color:var(--fg-mid);
+  display:grid;place-items:center;font-size:12px;font-weight:600;
+  transition:background .18s var(--glide),color .18s var(--glide),transform .09s var(--out)}
+.icon-btn:hover{color:var(--fg);background:var(--surface-2)}
+.icon-btn:active{transform:translateY(1px)}
+/* 键盘可达性：参考站普遍用 focus-visible 而非 focus，避免鼠标点击也出现描边 */
+.btn:focus-visible,.icon-btn:focus-visible,.ep:focus-visible,.chip:focus-visible{
+  outline:2px solid var(--b-400);outline-offset:2px}
+
+/* ---- 揭示动画 ----------------------------------------------------------- */
+.rv{opacity:0;transform:translateY(14px);
+  transition:opacity .6s var(--glide),transform .6s var(--glide)}
+.rv.in{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){
+  .rv{opacity:1;transform:none;transition:none}
+  *{animation-duration:.01ms !important;transition-duration:.01ms !important}
+}
+/* 打印/截图不滚动，IntersectionObserver 永不触发，整页会是空白。
+   打印样式里强制可见；JS 侧另有超时兜底。 */
+@media print{
+  .rv{opacity:1 !important;transform:none !important}
+  .ambient,#nav,.stream-foot,.js-foot,.race-foot{display:none}
+}
+
+/* ---- Hero --------------------------------------------------------------- */
+.hero{padding:76px 0 40px}
+.hero-grid{display:grid;grid-template-columns:1fr 1fr;gap:52px;align-items:center}
+@media (max-width:940px){.hero-grid{grid-template-columns:1fr;gap:36px}.hero{padding:48px 0 28px}}
+.eyebrow{display:inline-flex;align-items:center;gap:8px;height:27px;padding:0 12px;
+  border-radius:var(--r-full);background:var(--surface-2);
+  box-shadow:inset 0 0 0 1px var(--line);
+  font-size:12.5px;color:var(--fg-mid);margin-bottom:20px}
+.eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--sig);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--sig) 22%,transparent);
+  animation:pulse 2.4s var(--glide) infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+/* 渐变文字只用在这一个强调词上。整句连同 span 一起走 i18n：
+   中英文强调词的位置不同，拆成"前缀+固定词"会在另一语言下语序错乱。 */
+.accent{background:var(--grad);-webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;color:transparent}
+.lede{font-size:clamp(.98rem,1.5vw,1.12rem);color:var(--fg-mid);margin:18px 0 26px;max-width:33em}
+.hero-cta{display:flex;gap:11px;flex-wrap:wrap}
+.note{margin-top:17px;font-size:12.8px;color:var(--fg-dim)}
+.note b{color:var(--fg-mid);font-weight:600}
+
+/* ---- 终端 ---------------------------------------------------------------
+   等号两侧不能是 flex 兄弟节点：flex 的 gap 会在 "=" 后插入可见空格，
+   渲染成 `VAR= value`，用户照着抄的命令是坏的。所以嵌在同一个 span 里。 */
+.term{border-radius:var(--r-xl);overflow:hidden;background:var(--bg-soft);
+  box-shadow:inset 0 0 0 1px var(--line),0 24px 60px -20px rgba(0,0,0,.55)}
+.term-bar{display:flex;align-items:center;gap:7px;height:35px;padding:0 13px;
+  background:var(--surface);border-bottom:1px solid var(--line)}
+.term-bar i{width:9.5px;height:9.5px;border-radius:50%;background:var(--line);flex:none}
+.term-bar span{margin-left:6px;font-size:11.5px;color:var(--fg-dim);font-family:var(--mono)}
+.term-body{padding:15px 16px;font-family:var(--mono);font-size:12.6px;line-height:1.95;
+  min-height:236px}
+.ln{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap}
+.ln.gap{margin-top:11px}
+.c-p{color:var(--b-300)}.c-k{color:#c792ea}.c-hi{color:var(--fg)}
+.c-v{color:var(--sig-soft)}.c-s{color:var(--clay)}.c-d{color:var(--fg-dim)}
+.c-ok{color:var(--sig)}
+.tag{display:inline-block;padding:0 6px;border-radius:4px;font-size:10.5px;font-weight:600}
+.t-200{background:color-mix(in srgb,var(--sig) 17%,transparent);color:var(--sig)}
+.cur{display:inline-block;width:7.5px;height:15px;background:var(--b-300);
+  animation:blink 1.15s step-end infinite;vertical-align:text-bottom}
+@keyframes blink{50%{opacity:0}}
+
+/* ---- 组件1：SSE 流式可视化 ----------------------------------------------
+   这是页面的主交互。流式是这个产品最核心的能力，也是最难用文字讲清的，
+   所以让它自己演出来：token 逐个到达、计数器跳动、速率实时算。 */
+.stream{margin-top:13px;border-radius:var(--r-lg);background:var(--bg-soft);
+  box-shadow:inset 0 0 0 1px var(--line);overflow:hidden}
+.stream-head{display:flex;align-items:center;justify-content:space-between;
+  padding:9px 13px;border-bottom:1px solid var(--line);background:var(--surface)}
+.stream-title{display:flex;align-items:center;gap:8px;font-size:11.6px;color:var(--fg-mid);
+  font-family:var(--mono)}
+.stream-live{width:6px;height:6px;border-radius:50%;background:var(--fg-dim)}
+.stream.on .stream-live{background:var(--sig);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--sig) 22%,transparent);
+  animation:pulse 1.5s var(--glide) infinite}
+.stream-stats{display:flex;gap:14px;font-family:var(--mono);font-size:11.4px}
+.stat b{color:var(--sig);font-weight:600;font-variant-numeric:tabular-nums}
+.stat span{color:var(--fg-dim)}
+.stream-body{padding:12px 13px;min-height:74px;display:flex;flex-wrap:wrap;
+  gap:4px;align-content:flex-start}
+/* 每个 token 一个 pill，入场时从下方浮起 —— 这是"流"的视觉隐喻 */
+.tok{display:inline-block;padding:1.5px 6px;border-radius:5px;font-family:var(--mono);
+  font-size:11.6px;background:var(--surface-2);color:var(--fg);
+  box-shadow:inset 0 0 0 1px var(--line);
+  animation:tokIn .32s var(--swift) both}
+@keyframes tokIn{from{opacity:0;transform:translateY(7px) scale(.94)}to{opacity:1;transform:none}}
+.tok.think{color:var(--clay);background:color-mix(in srgb,var(--clay) 11%,transparent);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--clay) 26%,transparent)}
+.tok.json{color:#c792ea;background:rgba(199,146,234,.1);
+  box-shadow:inset 0 0 0 1px rgba(199,146,234,.24)}
+/* 空格标记：空格是 token 的一部分，不是分隔符 */
+.tok .sp{color:var(--fg-dim);opacity:.45}
+/* 流进终端里，所以不要再套一层背景 */
+.term-body .stream-body{padding:9px 0 4px;min-height:52px}
+.stream-foot{display:flex;align-items:center;gap:9px;padding:9px 13px;
+  border-top:1px solid var(--line)}
+.mini-btn{height:27px;padding:0 11px;border-radius:var(--r-sm);font-size:11.8px;
+  font-weight:500;box-shadow:inset 0 0 0 1px var(--line);color:var(--fg-mid);
+  transition:all .2s var(--swift)}
+.mini-btn:hover{color:var(--fg);background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--line-lit)}
+.mini-btn.primary{background:var(--b-600);color:#fff;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.2),0 1px 1px rgba(2,8,20,.45)}
+.mini-btn.primary:hover{transform:translateY(-1px);box-shadow:0 5px 18px rgba(0,96,240,.42)}
+.stream-hint{font-size:11.4px;color:var(--fg-dim);margin-left:auto}
+
+/* ---- j space ------------------------------------------------------------
+   左边是 canvas 画的二维投影，右边是概率条。
+   配色直接取 smartcli 的 ocean 主题（fx/theme.py 里的 RGB stops），
+   跟 favicon 的蓝带几乎重合 —— 两边本来就是同一套色。 */
+.js{display:grid;grid-template-columns:1.25fr 1fr;gap:14px;align-items:stretch}
+@media (max-width:900px){.js{grid-template-columns:1fr}}
+.js-left,.js-right{border-radius:var(--r-lg);background:var(--bg-soft);
+  box-shadow:inset 0 0 0 1px var(--line);overflow:hidden;display:flex;flex-direction:column}
+.js-hd{display:flex;align-items:center;gap:9px;padding:9px 13px;
+  border-bottom:1px solid var(--line);background:var(--surface)}
+.js-lbl{font-size:11.6px;font-weight:600;color:var(--fg-mid);letter-spacing:-.01em}
+.js-dim{margin-left:auto;font-size:10.6px;color:var(--fg-dim)}
+/* 高度写死：resize() 按 CSS 盒子设 backing store，height:auto 会让两者互相追逐 */
+#js-canvas{display:block;width:100%;height:300px;flex:1;background:
+  radial-gradient(ellipse 70% 70% at 50% 50%,rgba(0,96,240,.07),transparent 72%)}
+@media (max-width:900px){#js-canvas{height:240px}}
+.js-legend{display:flex;gap:14px;padding:9px 13px;border-top:1px solid var(--line);
+  font-size:10.8px;color:var(--fg-dim);flex-wrap:wrap}
+.js-legend span{display:inline-flex;align-items:center;gap:5px}
+/* 图例用方块，和 canvas 里画的方形数据点对应 —— 圆点会让人以为是另一种东西。
+   candidate 那个用空心方框，同样对应画布上的空心候选点。 */
+.js-k{width:8px;height:8px;border-radius:1px;flex:none}
+.js-k.path{background:#5ad2e6;opacity:.62;height:2px;border-radius:0}
+.js-k.anchor{background:#148cc8}
+.js-k.cand{background:none;box-shadow:inset 0 0 0 1px var(--clay)}
+
+/* token 预测：概率读数 -------------------------------------------------------
+   按仪表的规矩改过：
+   - 条形是方角不是圆角。圆角进度条是产品化的装饰；仪表的电平条是方的。
+   - 条形底部有刻度线（25/50/75%），让"这根有多长"能被读出来而不只是比出来。
+   - 数值右对齐 + tabular-nums + 固定小数位，否则每帧宽度都在变，视觉在抖。
+   - 选中项不靠底色高亮，靠左侧一道 2px 的实心标记 —— 底色块会让整行糊掉。 */
+.pred{padding:11px 13px;display:grid;gap:5px;flex:1;align-content:start}
+.pred-row{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:9px;
+  font-family:var(--mono);font-size:11.6px;position:relative;
+  padding:4px 7px 4px 9px;
+  transition:color .18s var(--glide)}
+/* 左侧标记条：默认透明，选中时点亮。不改背景，行不会糊 */
+.pred-row::before{content:'';position:absolute;left:0;top:3px;bottom:3px;width:2px;
+  background:transparent;transition:background .12s var(--out)}
+.pred-row.picked::before{background:var(--sig)}
+.pred-tok{color:var(--fg-mid);min-width:46px}
+.pred-row.picked .pred-tok{color:var(--sig);font-weight:600}
+/* 空格在分词器眼里是 token 的一部分，不是分隔符 —— 用 ␣ 显式画出来 */
+.pred-tok .sp{color:var(--fg-dim);opacity:.5}
+.pred-bar{height:6px;background:var(--surface-2);position:relative;
+  box-shadow:inset 0 0 0 1px var(--line)}
+/* 25/50/75% 刻度：用重复渐变画三根竖线（这是"线"不是填充，不算装饰渐变） */
+.pred-bar::after{content:'';position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(90deg,
+    transparent 0,transparent calc(25% - 1px),
+    color-mix(in srgb,var(--fg-dim) 45%,transparent) calc(25% - 1px),
+    color-mix(in srgb,var(--fg-dim) 45%,transparent) 25%)}
+.pred-bar i{display:block;height:100%;background:#1e5f96;
+  transition:width .22s var(--out)}
+.pred-row.picked .pred-bar i{background:var(--sig)}
+.pred-p{color:var(--fg-mid);font-variant-numeric:tabular-nums;
+  min-width:44px;text-align:right;letter-spacing:-.02em}
+.pred-row.picked .pred-p{color:var(--sig);font-weight:600}
+.js-out{display:flex;align-items:baseline;gap:8px;padding:10px 13px;
+  border-top:1px solid var(--line);min-height:40px;flex-wrap:wrap}
+.js-out-lbl{font-size:10.6px;color:var(--fg-dim);flex:none}
+.js-out-text{font-size:12.2px;color:var(--fg);line-height:1.7}
+.js-foot{display:flex;align-items:center;gap:10px;margin-top:13px;flex-wrap:wrap}
+
+/* ---- 信号条 ------------------------------------------------------------- */
+.strip{border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+  background:var(--surface);padding:13px 0}
+.strip-in{display:flex;align-items:center;gap:15px;flex-wrap:wrap;
+  font-size:13px;color:var(--fg-mid)}
+.live{display:inline-flex;align-items:center;gap:8px;font-weight:600;color:var(--fg)}
+.live i{width:7px;height:7px;border-radius:50%;background:var(--sig);
+  box-shadow:0 0 0 3.5px color-mix(in srgb,var(--sig) 20%,transparent);
+  animation:pulse 2.2s var(--glide) infinite}
+
+/* ---- 区块通用 ----------------------------------------------------------- */
+.sec{padding:66px 0}
+@media (max-width:940px){.sec{padding:46px 0}}
+.sec-head{margin-bottom:30px}
+.sec-sub{color:var(--fg-mid);margin-top:9px;font-size:14.6px}
+
+/* ---- 组件2：延迟竞速 ----------------------------------------------------
+   两个接入点的延迟做成赛道条，实测值到了就一起填充。比单独两个数字更直观：
+   访客一眼看出"哪个更近"，而不用自己比较毫秒数。 */
+.ep-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}
+@media (max-width:760px){.ep-grid{grid-template-columns:1fr}}
+.ep{position:relative;text-align:left;padding:15px 16px;border-radius:var(--r-lg);
+  background:var(--surface);box-shadow:inset 0 0 0 1px var(--line);
+  transition:all .24s var(--swift);overflow:hidden}
+.ep:hover{background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--line-lit);
+  transform:translateY(-2px)}
+.ep[aria-pressed="true"]{box-shadow:inset 0 0 0 1.5px var(--b-500),
+  0 8px 26px -10px rgba(0,96,240,.5)}
+.ep-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}
+.ep-host{font-family:var(--mono);font-size:13.4px;font-weight:600;letter-spacing:-.01em}
+.ep-badge{font-size:10.6px;padding:2px 7px;border-radius:var(--r-full);
+  background:color-mix(in srgb,var(--b-500) 17%,transparent);color:var(--b-300);
+  font-weight:600;white-space:nowrap}
+.ep-badge.dim{background:var(--surface-2);color:var(--fg-dim)}
+.ep-geo{font-size:12.2px;color:var(--fg-dim);margin-bottom:11px}
+.ep-lat{font-family:var(--mono);font-size:19px;font-weight:600;color:var(--sig);
+  font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.ep-lat.pending{font-size:12.4px;font-weight:400;color:var(--fg-dim)}
+.ep-lat.failed{font-size:12.4px;font-weight:400;color:var(--fg-dim)}
+.ep-lat small{font-size:11.5px;font-weight:400;color:var(--fg-dim);margin-left:2px}
+/* 赛道：宽度由 JS 按相对延迟设置，最快的那个铺满。
+   探测失败时宽度保持 0 —— 那时整条不出现，而不是画一条 0 长度的线假装有数据。
+   底部那条极淡的横线是"量程"，让人看出这里本该有一条赛道。 */
+.ep-track{position:absolute;left:0;bottom:0;height:2.5px;width:0;
+  background:var(--b-400);transition:width .9s var(--out);z-index:1}
+.ep::after{content:'';position:absolute;left:0;right:0;bottom:0;height:1px;
+  background:var(--line);pointer-events:none}
+.ep-fastest{display:inline-flex;align-items:center;gap:4px;font-size:10.6px;
+  color:var(--sig);font-weight:600;margin-left:8px}
+
+/* 复制条 */
+.ep-bar{display:flex;align-items:center;gap:11px;margin-top:11px;padding:11px 14px;
+  border-radius:var(--r);background:var(--bg-soft);box-shadow:inset 0 0 0 1px var(--line);
+  font-family:var(--mono);font-size:12.7px;overflow:hidden}
+.ep-snip{flex:1;min-width:0;overflow-x:auto;white-space:nowrap;scrollbar-width:none}
+.ep-snip::-webkit-scrollbar{display:none}
+.ep-snip-lbl{display:inline-block;font-family:var(--sans);font-size:10.6px;
+  color:var(--fg-dim);margin-right:9px;padding:1.5px 6px;border-radius:4px;
+  background:var(--surface-2)}
+.ep-snip b{color:var(--b-300);font-weight:600}
+.ep-copy{flex:none;height:28px;padding:0 12px;border-radius:var(--r-sm);
+  font-family:var(--sans);font-size:11.8px;font-weight:500;color:var(--fg-mid);
+  box-shadow:inset 0 0 0 1px var(--line);transition:all .2s var(--swift)}
+.ep-copy:hover{color:var(--fg);background:var(--surface-2)}
+.ep-copy.done{color:var(--sig);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--sig) 45%,transparent)}
+
+/* ---- 组件3：模型切换器 --------------------------------------------------
+   点一个模型，终端里的命令原地改写。把"换模型只改 model 字段"从一句话
+   变成一个可以自己动手点的动作。 */
+.mdl-switch{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:15px}
+.chip{height:30px;padding:0 13px;border-radius:var(--r-full);font-size:12.4px;
+  font-weight:500;color:var(--fg-mid);background:var(--surface);
+  box-shadow:inset 0 0 0 1px var(--line);transition:all .22s var(--swift);
+  font-family:var(--mono);letter-spacing:-.01em;
+  display:inline-flex;align-items:center;gap:6px}
+.chip:hover{color:var(--fg);background:var(--surface-2);transform:translateY(-1.5px)}
+.chip[aria-pressed="true"]{color:#fff;background:var(--b-600);
+  box-shadow:0 3px 14px rgba(0,96,240,.36)}
+.chip-claude[aria-pressed="true"]{background:var(--clay)}
+.chip .chip-tag{font-family:var(--sans);font-size:9.6px;padding:1px 5px;
+  border-radius:var(--r-full);background:rgba(255,255,255,.16);font-weight:600}
+.mdl-out{border-radius:var(--r-lg);background:var(--bg-soft);
+  box-shadow:inset 0 0 0 1px var(--line);padding:14px 15px;
+  font-family:var(--mono);font-size:12.7px;line-height:2}
+.mdl-out .swap{color:var(--sig-soft);transition:color .3s var(--glide)}
+.mdl-out .swap.flash{color:var(--b-300);text-shadow:0 0 14px rgba(0,192,240,.7)}
+.mdl-meta-row{display:flex;gap:16px;flex-wrap:wrap;margin-top:11px;
+  padding-top:11px;border-top:1px solid var(--line);font-size:11.8px;color:var(--fg-dim)}
+.mdl-meta-row b{color:var(--fg-mid);font-weight:600;font-family:var(--mono)}
+
+/* ---- 自绘勾选框 ---------------------------------------------------------
+   隐藏原生 input 但保留它：语义（role/checked）、键盘（空格切换）、
+   表单行为全部免费继承，只把外观换掉。用 opacity:0 + 绝对定位而不是
+   display:none —— 后者会让元素退出无障碍树，读屏软件就找不到它了。
+
+   对勾用 SVG path + stroke-dashoffset 描出来。不用字体里的 ✓：
+   那个字形在 Windows / macOS / Android 上差别很大，还会被 emoji 字体劫持。 */
+.ck{display:inline-flex;align-items:center;gap:8px;cursor:pointer;position:relative;
+  font-size:11.8px;color:var(--fg-mid);user-select:none;
+  height:26px;padding:0 11px 0 9px;border-radius:var(--r-full);
+  box-shadow:inset 0 0 0 1px var(--line);transition:all .22s var(--swift)}
+.ck:hover{color:var(--fg);background:var(--surface-2)}
+.ck-in{position:absolute;opacity:0;width:0;height:0;margin:0;pointer-events:none}
+.ck-box{width:14px;height:14px;border-radius:4px;flex:none;position:relative;
+  box-shadow:inset 0 0 0 1.5px var(--line);
+  transition:box-shadow .2s var(--swift),background .2s var(--swift)}
+.ck-box svg{position:absolute;inset:0;width:14px;height:14px;fill:none;
+  stroke:#fff;stroke-width:2.1;stroke-linecap:round;stroke-linejoin:round}
+.ck-box svg path{
+  /* 路径总长约 13.6，先整段偏移藏起来，勾选时归零 = 描画出来 */
+  stroke-dasharray:14;stroke-dashoffset:14;
+  transition:stroke-dashoffset .26s var(--swift)}
+.ck-in:checked ~ .ck-box{background:var(--b-600);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.25)}
+.ck-in:checked ~ .ck-box svg path{stroke-dashoffset:0}
+.ck-in:checked ~ .ck-code,.ck-in:checked ~ .ck-lbl{color:var(--b-300)}
+.ck:has(.ck-in:checked){box-shadow:inset 0 0 0 1px var(--line-lit);
+  background:color-mix(in srgb,var(--b-500) 12%,transparent)}
+/* 键盘焦点必须看得见 —— input 本身不可见，所以描在外层 */
+.ck:has(.ck-in:focus-visible){outline:2px solid var(--b-400);outline-offset:2px}
+.ck-code{font-family:var(--mono);font-weight:600;transition:color .2s var(--glide)}
+.ck-lbl{transition:color .2s var(--glide)}
+
+/* ---- [1m] 后缀 --------------------------------------------------------- */
+.mdl-cmd-line{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.mdl-cmd-line #mdl-copy{margin-left:auto;font-family:var(--sans)}
+.ctx-sfx{color:var(--b-300);font-weight:600;transition:color .3s var(--glide)}
+.ctx-sfx.flash{text-shadow:0 0 14px rgba(0,192,240,.7)}
+.mdl-meta-sep{width:1px;height:14px;background:var(--line);flex:none}
+.mdl-more{display:flex;align-items:center;gap:13px;margin-top:14px;flex-wrap:wrap}
+.mdl-more-note{font-size:11.8px;color:var(--fg-dim);font-family:var(--mono)}
+
+/* ---- 合并后的终端：状态挪进标题栏 -------------------------------------- */
+.term-stats{margin-left:auto;display:flex;align-items:center;gap:11px;
+  font-family:var(--mono);font-size:11px}
+.term-stats .stat{display:flex;align-items:center;gap:3px}
+.term-stats .stat b{color:var(--sig);font-weight:600;font-variant-numeric:tabular-nums}
+.term-stats .stat span{color:var(--fg-dim)}
+.c-q{color:var(--sig-soft)}
+#term-tail{margin-top:4px}
+/* 模板切换：小圆点按钮排在播放键右边 */
+.tpl-row{display:flex;gap:5px;margin-left:auto;flex-wrap:wrap}
+.tpl{height:24px;padding:0 9px;border-radius:var(--r-full);font-size:10.8px;
+  font-family:var(--mono);color:var(--fg-dim);
+  box-shadow:inset 0 0 0 1px var(--line);transition:all .2s var(--swift)}
+.tpl:hover{color:var(--fg);background:var(--surface-2)}
+.tpl[aria-pressed="true"]{color:var(--b-300);
+  box-shadow:inset 0 0 0 1px var(--line-lit);
+  background:color-mix(in srgb,var(--b-500) 13%,transparent)}
+
+
+/* ---- 组件5：双轨竞速 ----------------------------------------------------
+   同一个提示词、两个模型一起跑。讲的是访客真正纠结的问题（选哪个模型），
+   而不是他们还没开始用就要估的月消耗量。 */
+/* 两条并排而不是上下堆叠 ------------------------------------------------------
+   之前满页宽 1048px 的条，把 0–14 tok/s 的量程拉得极长，两条峰值只差 71px，
+   看起来几乎一样长 —— 速度差被稀释成了看不见。并排之后每条约 500px，
+   而且两条的条头在同一水平线上，眼睛可以直接比长度，不用记住上一条到哪。 */
+.race{border-radius:var(--r-xl);background:var(--bg-soft);
+  box-shadow:inset 0 0 0 1px var(--line);padding:20px 22px;
+  display:grid;grid-template-columns:1fr 1fr;gap:22px}
+.race-foot{grid-column:1 / -1}
+@media (max-width:760px){.race{grid-template-columns:1fr;gap:16px}}
+@media (max-width:600px){.race{padding:16px 15px}}
+/* 量程标尺：条下面标出 0 / 7 / 14，让"多长"能被读成"多少 tok/s" */
+.race-scale{display:flex;justify-content:space-between;margin-top:4px;
+  font-family:var(--mono);font-size:9.6px;color:var(--fg-dim);
+  font-variant-numeric:tabular-nums}
+.race-hd{display:flex;align-items:center;gap:9px;margin-bottom:8px}
+.race-name{font-size:12.8px;font-weight:600;letter-spacing:-.012em}
+.race-tag{font-size:10.4px;padding:1.5px 7px;border-radius:var(--r-full);font-weight:600;
+  background:color-mix(in srgb,var(--clay) 16%,transparent);color:var(--clay)}
+.race-tag.sig{background:color-mix(in srgb,var(--sig) 16%,transparent);color:var(--sig)}
+/* 电平条：方角 + 分段刻度 + 峰值保持指针 -------------------------------------
+   真实的 VU/PPM 表有两个部分：跟随瞬时值的条，和一根"跌落很慢"的峰值指针。
+   只有条的话看不出峰值到过哪里；只有指针的话看不出当前。两个都要。 */
+.race-bar{display:block;height:8px;background:var(--surface-2);position:relative;
+  box-shadow:inset 0 0 0 1px var(--line);overflow:hidden}
+/* 每 10% 一根刻度线，读得出长度而不只是比得出 */
+.race-bar::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:2;
+  background:repeating-linear-gradient(90deg,
+    transparent 0,transparent calc(10% - 1px),
+    color-mix(in srgb,var(--fg-dim) 32%,transparent) calc(10% - 1px),
+    color-mix(in srgb,var(--fg-dim) 32%,transparent) 10%)}
+.race-fill{display:block;height:100%;width:0;background:var(--clay);
+  transition:width .09s linear}
+.race-fill.sonnet{background:var(--b-400)}
+/* 峰值指针：一根 2px 竖线，只前进不后退（JS 里保证），所以不需要 transition */
+.race-peak{position:absolute;top:0;bottom:0;width:2px;left:0;z-index:3;
+  background:var(--fg);opacity:0;transition:opacity .2s var(--glide)}
+.race-peak.on{opacity:.75}
+.race-out{margin-top:9px;min-height:38px;font-family:var(--mono);font-size:11.8px;
+  line-height:1.75;color:var(--fg-mid);display:flex;flex-wrap:wrap;gap:3px;align-content:flex-start}
+.race-out .tok{font-size:11.4px;padding:1px 5px}
+.race-stats{display:flex;gap:15px;margin-top:8px;font-family:var(--mono);font-size:11.4px;
+  color:var(--fg-dim)}
+.race-stats b{color:var(--sig);font-weight:600;font-variant-numeric:tabular-nums}
+.race-lane.win .race-stats b{color:var(--sig)}
+.race-lane.win .race-name::after{content:'';display:inline-block;
+  width:5px;height:5px;border-radius:50%;background:var(--sig);
+  margin-left:6px;vertical-align:middle}
+.race-foot{display:flex;align-items:center;gap:10px;padding-top:15px;
+  border-top:1px solid var(--line)}
+
+/* ---- 组件6：提示词缓存 --------------------------------------------------- */
+.cc{display:grid;grid-template-columns:1.15fr 1fr;gap:14px;align-items:stretch}
+@media (max-width:900px){.cc{grid-template-columns:1fr}}
+.cc-left,.cc-right{background:var(--bg-soft);box-shadow:inset 0 0 0 1px var(--line);
+  border-radius:var(--r-lg);display:flex;flex-direction:column;overflow:hidden}
+.cc-hd{display:flex;align-items:center;gap:8px;padding:9px 13px;
+  border-bottom:1px solid var(--line);background:var(--surface);
+  font-size:11.6px;color:var(--fg-mid)}
+.cc-lbl{font-weight:600;letter-spacing:-.01em}
+.cc-dim{margin-left:auto;font-size:10.6px;color:var(--fg-dim);
+  font-variant-numeric:tabular-nums}
+
+/* 前缀块：每块代表一段 token。方块 + 细边，读作"数据段"不是"标签" */
+.cc-blocks{padding:13px;display:flex;flex-wrap:wrap;gap:3px;flex:1;align-content:flex-start}
+.cc-blk{height:22px;border-radius:3px;font-family:var(--mono);font-size:10.4px;
+  cursor:pointer;border:none;
+  display:inline-flex;align-items:center;padding:0 7px;
+  box-shadow:inset 0 0 0 1px var(--line);color:var(--fg-dim);
+  background:var(--surface-2);
+  transition:background .2s var(--glide),color .2s var(--glide),
+             box-shadow .2s var(--glide)}
+/* 命中：信号青（这是"活的"状态，符合 --sig 的语义约定） */
+.cc-blk.cached{color:var(--sig);background:color-mix(in srgb,var(--sig) 13%,transparent);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--sig) 38%,transparent)}
+/* 失效：陶土色，且加斜纹 —— 颜色之外再给一个不依赖色觉的区分 */
+.cc-blk.dirty{color:var(--clay);
+  background:repeating-linear-gradient(45deg,
+    color-mix(in srgb,var(--clay) 16%,transparent) 0 3px,
+    transparent 3px 6px);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--clay) 40%,transparent)}
+.cc-blk.fresh{color:var(--b-300);background:color-mix(in srgb,var(--b-500) 13%,transparent);
+  box-shadow:inset 0 0 0 1px var(--line-lit)}
+.cc-blk:hover{box-shadow:inset 0 0 0 1px var(--fg-dim)}
+.cc-blk:focus-visible{outline:2px solid var(--b-400);outline-offset:1px}
+.cc-blk:active{transform:translateY(1px)}
+.cc-legend{display:flex;gap:13px;padding:9px 13px;border-top:1px solid var(--line);
+  font-size:10.6px;color:var(--fg-dim);flex-wrap:wrap}
+.cc-legend span{display:inline-flex;align-items:center;gap:5px}
+.cc-k{width:9px;height:9px;border-radius:2px;flex:none;box-shadow:inset 0 0 0 1px var(--line)}
+.cc-k.cached{background:color-mix(in srgb,var(--sig) 45%,transparent)}
+.cc-k.dirty{background:repeating-linear-gradient(45deg,
+  color-mix(in srgb,var(--clay) 55%,transparent) 0 2px,transparent 2px 4px)}
+.cc-k.fresh{background:color-mix(in srgb,var(--b-500) 45%,transparent)}
+
+/* 成本对照条 */
+.cc-meters{padding:13px 13px 4px;display:grid;gap:11px}
+.cc-meter-hd{display:flex;justify-content:space-between;align-items:baseline;
+  font-size:11.4px;color:var(--fg-mid);margin-bottom:5px}
+.cc-meter-hd b{font-size:12.4px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.cc-track{height:7px;background:var(--surface-2);position:relative;overflow:hidden;
+  box-shadow:inset 0 0 0 1px var(--line)}
+/* 刻度线：和概率条、电平条用同一套画法，间隔 20%。
+   不加这个的话三种条长得不一样，读者会以为它们是不同性质的东西。 */
+.cc-track::after{content:'';position:absolute;inset:0;pointer-events:none;z-index:2;
+  background:repeating-linear-gradient(90deg,
+    transparent 0,transparent calc(20% - 1px),
+    color-mix(in srgb,var(--fg-dim) 30%,transparent) calc(20% - 1px),
+    color-mix(in srgb,var(--fg-dim) 30%,transparent) 20%)}
+.cc-bar{display:block;height:100%;width:0;transition:width .4s var(--out)}
+.cc-bar.on{background:var(--sig)}
+.cc-bar.off{background:var(--clay)}
+.cc-save{margin:9px 13px 0;padding:9px 11px;border-radius:var(--r-sm);
+  background:color-mix(in srgb,var(--sig) 9%,transparent);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--sig) 24%,transparent);
+  display:flex;align-items:baseline;gap:8px;font-size:11.6px;color:var(--fg-mid)}
+.cc-save b{color:var(--sig);font-size:13.4px;font-variant-numeric:tabular-nums;
+  letter-spacing:-.02em}
+.cc-pct{margin-left:auto;color:var(--fg-dim);font-size:10.8px}
+/* 费率表：真表格，右列数字等宽右对齐 */
+.cc-rates{width:100%;border-collapse:collapse;margin-top:12px;font-size:11.2px}
+.cc-rates th,.cc-rates td{padding:5px 13px;text-align:left;border-top:1px solid var(--line)}
+.cc-rates th{font-weight:400;color:var(--fg-dim)}
+.cc-rates td{font-variant-numeric:tabular-nums;color:var(--fg-mid);text-align:right}
+.cc-rates td.cc-usd{color:var(--fg-dim);min-width:76px}
+.cc-rates tr.lit th{color:var(--sig)}
+.cc-rates tr.lit td{color:var(--sig)}
+.cc-foot{display:flex;align-items:center;gap:9px;margin-top:13px;flex-wrap:wrap}
+
+/* ---- 组件6：命令面板 ⌘K ------------------------------------------------
+   前沿站点的标配（OpenRouter 就有）。这里不做花活，只做真正有用的：
+   跳区块、复制端点、切模型。 */
+.pal-mask{position:fixed;inset:0;z-index:100;display:none;
+  background:rgba(4,8,16,.62);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px);
+  padding-top:14vh}
+.pal-mask.open{display:block;animation:fade .2s var(--glide)}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.pal{max-width:520px;margin:0 auto;border-radius:var(--r-xl);overflow:hidden;
+  background:var(--bg-soft);box-shadow:0 0 0 1px var(--line),0 30px 80px -20px rgba(0,0,0,.75);
+  animation:palIn .26s var(--swift)}
+@keyframes palIn{from{opacity:0;transform:translateY(-14px) scale(.97)}to{opacity:1;transform:none}}
+.pal-in{width:100%;height:48px;padding:0 17px;background:none;border:none;outline:none;
+  color:var(--fg);font-size:14.5px;font-family:var(--sans);
+  border-bottom:1px solid var(--line)}
+.pal-in::placeholder{color:var(--fg-dim)}
+.pal-list{max-height:290px;overflow-y:auto;padding:7px}
+.pal-item{display:flex;align-items:center;gap:11px;padding:9px 12px;border-radius:var(--r);
+  font-size:13.2px;cursor:pointer;color:var(--fg-mid)}
+.pal-item[aria-selected="true"]{background:var(--surface-2);color:var(--fg)}
+.pal-ic{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;flex:none;
+  background:var(--surface-2);font-size:11px;font-family:var(--mono);color:var(--b-300)}
+.pal-item .sub{margin-left:auto;font-size:11px;color:var(--fg-dim);font-family:var(--mono)}
+.pal-empty{padding:22px;text-align:center;font-size:12.6px;color:var(--fg-dim)}
+kbd{font-family:var(--mono);font-size:10.6px;padding:2px 5px;border-radius:4px;
+  background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--line);color:var(--fg-mid)}
+
+/* ---- 卡片 / 表格 / CTA / 页脚 ------------------------------------------- */
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}
+@media (max-width:860px){.g3{grid-template-columns:1fr}}
+.card{padding:19px 20px;border-radius:var(--r-lg);background:var(--surface);
+  box-shadow:inset 0 0 0 1px var(--line);transition:all .26s var(--swift)}
+.card:hover{background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--line-lit);
+  transform:translateY(-2.5px)}
+.card-ic{width:33px;height:33px;border-radius:9px;display:grid;place-items:center;
+  margin-bottom:13px;background:color-mix(in srgb,var(--b-500) 15%,transparent)}
+.card-ic svg{width:17px;height:17px;fill:none;stroke:var(--b-300);stroke-width:1.7}
+.card p{color:var(--fg-mid);font-size:13.4px;margin-top:7px;line-height:1.7}
+.cmp{border-radius:var(--r-lg);overflow:hidden;box-shadow:inset 0 0 0 1px var(--line)}
+.cmp table{width:100%;border-collapse:collapse;font-size:13.4px}
+.cmp th,.cmp td{padding:13px 15px;text-align:left;border-bottom:1px solid var(--line)}
+.cmp thead th{background:var(--surface);font-size:12.2px;font-weight:600;color:var(--fg-mid)}
+.cmp tbody th{font-weight:500;color:var(--fg-mid);width:26%}
+.cmp tr:last-child th,.cmp tr:last-child td{border-bottom:none}
+.col-them{color:var(--fg-dim)}
+.col-us{color:var(--fg);background:color-mix(in srgb,var(--b-500) 7%,transparent);font-weight:500}
+thead .col-us{color:var(--b-300);font-weight:600}
+@media (max-width:640px){.cmp table{font-size:12.4px}.cmp th,.cmp td{padding:10px 11px}}
+.cta{padding:66px 0 76px}
+.cta-box{text-align:center;padding:44px 30px;border-radius:var(--r-xl);
+  background:radial-gradient(ellipse 80% 130% at 50% 0%,rgba(0,96,240,.16),transparent 72%),var(--surface);
+  box-shadow:inset 0 0 0 1px var(--line)}
+.cta-box p{color:var(--fg-mid);margin:13px 0 24px;font-size:14.6px}
+footer{border-top:1px solid var(--line);padding:26px 0;background:var(--surface)}
+.foot-in{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  flex-wrap:wrap;font-size:12.6px;color:var(--fg-dim)}
+.foot-links{display:flex;gap:17px;flex-wrap:wrap}
+.foot-links a{transition:color .2s var(--glide)}
+.foot-links a:hover{color:var(--fg)}
+/* 复制成功的浮层提示 */
+.toast{position:fixed;bottom:26px;left:50%;transform:translate(-50%,80px);z-index:120;
+  padding:10px 17px;border-radius:var(--r);background:var(--bg-soft);
+  box-shadow:0 0 0 1px var(--line),0 14px 40px -10px rgba(0,0,0,.6);
+  font-size:13px;opacity:0;transition:all .3s var(--swift);pointer-events:none}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+<!-- ============================================================================
+     图标精灵：lucide 的真实路径数据（MIT），内联而不是走 iconfont CDN。
+     两个原因：一是应用下发的 CSP 只放行 'self'，任何外链字体/脚本都会被拦；
+     二是 lucide 正是这个项目前端已有的依赖（lucide-react），路径数据同源，
+     所以落地页和面板画出来的图标是同一套字形，不会一个圆头一个方头。
+
+     lucide 的标准属性：viewBox 0 0 24 24 / fill none / stroke currentColor /
+     stroke-width 2 / linecap round / linejoin round。写在 <svg> 上由 <use> 继承。
+     ========================================================================= -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/></symbol>
+  <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></symbol>
+  <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24"><path d="M15.914 4a1.5 1.5 0 00-2.474-1.561l-9 9A1.5 1.5 0 005.5 14h4.002a.5.5 0 01.471.666L8.086 20a1.5 1.5 0 002.475 1.56l9-9A1.5 1.5 0 0018.5 10h-3.997a.5.5 0 01-.472-.667z"/></symbol>
+  <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+</defs></svg>
+
+<div class="ambient">
+  <div class="grid-bg"></div>
+  <div class="orb orb-1"></div><div class="orb orb-2"></div>
+</div>
+
+<nav id="nav">
+  <div class="wrap nav-in">
+    <a class="logo" href="#top"><img class="logo-mark" src="/favicon.png?v=2" alt="" width="25" height="25"><span>SkiAPI</span></a>
+    <div class="nav-actions">
+      <button class="btn btn-ghost" id="pal-open" title="⌘K">
+        <span data-i="nav.search">搜索</span> <kbd>⌘K</kbd>
+      </button>
+      <button class="icon-btn" id="lang" title="切换语言">ZH</button>
+      <button class="icon-btn" id="theme" title="切换主题" aria-label="切换主题"><svg class="ico" aria-hidden="true"><use href="#i-moon"/></svg></button>
+      <a class="btn btn-ghost" href="/login" data-i="nav.login">登录</a>
+      <a class="btn btn-solid" href="/login" data-i="nav.start">开始使用</a>
+    </div>
+  </div>
+</nav>
+
+<section class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div>
+      <div class="eyebrow"><span class="dot"></span><span data-i="hero.eyebrow">Anthropic 协议兼容网关</span></div>
+      <!-- 整句连同 <span class="accent"> 一起走 i18n：中英文里强调词位置不同，
+           拆成"前缀 + 固定词"会在另一语言下语序错乱。 -->
+      <h1 data-i="hero.h1">改两个环境变量，<span class="accent">直接开用</span></h1>
+      <p class="lede" data-i="hero.lede">标准 Anthropic Messages 协议。Claude Code、官方 SDK、任何兼容客户端，把 base_url 指过来就能跑，代码一行不用改。</p>
+      <div class="hero-cta">
+        <a class="btn btn-solid btn-lg" href="/login"><span data-i="hero.cta1">开始使用</span> <svg class="ico" aria-hidden="true"><use href="#i-arrow-right"/></svg></a>
+        <a class="btn btn-line btn-lg" href="#endpoints" data-i="hero.cta2">查看接入方式</a>
+      </div>
+      <p class="note" data-i="hero.note">一个密钥，<b>调用全部模型</b></p>
+    </div>
+
+    <div>
+      <!-- 终端与流式合并成一个：敲完命令就地吐 token，一个控件讲完整个故事。
+           右列不再挤两个盒子。 -->
+      <div class="term" id="how">
+        <div class="term-bar">
+          <i></i><i></i><i></i>
+          <span id="term-label">text/event-stream</span>
+          <div class="term-stats">
+            <span class="stat"><b id="s-tok">0</b><span>tok</span></span>
+            <span class="stat"><b id="s-rate">0</b><span>tok/s</span></span>
+            <span class="stream-live" id="s-live"></span>
+          </div>
+        </div>
+        <div class="term-body">
+          <div class="ln"><span class="c-d" data-i="t.l0"># 两个环境变量，就这些</span></div>
+          <!-- 等号两侧不能是 flex 兄弟节点：flex gap 会在 "=" 后插入可见空格，
+               渲染成 `VAR= value`，照着抄的命令是坏的。所以嵌在同一个 span 里。 -->
+          <div class="ln"><span class="c-p">$</span><span class="c-k">export</span><span class="c-hi">ANTHROPIC_BASE_URL=<span class="c-v" id="term-url">https://api.skiapi.dev</span></span></div>
+          <div class="ln"><span class="c-p">$</span><span class="c-k">export</span><span class="c-hi">ANTHROPIC_AUTH_TOKEN=<span class="c-s">sk-••••••••</span></span></div>
+          <!-- 模型写在这里，下面「换模型只改一个字段」那节点一下就会改这里。
+               id 必须留着：paintModel() 会同步它。 -->
+          <div class="ln gap"><span class="c-p">$</span><span class="c-hi">claude</span><span class="c-k">--model</span><span class="c-v swap" id="term-model">claude-opus-5</span></div>
+          <div class="ln"><span class="c-p">$</span><span class="c-k">-p</span><span class="c-q" id="term-prompt">"讲讲这个网关"</span></div>
+          <div class="ln"><span class="tag t-200">200</span><span class="c-ok" data-i="t.ok">已连接</span><span class="c-d" id="term-meta">200K 上下文</span></div>
+          <!-- token 就地流进这里 -->
+          <div class="stream-body" id="s-body"></div>
+          <div class="ln" id="term-tail"><span class="c-p">$</span><span class="cur"></span></div>
+        </div>
+        <div class="stream-foot">
+          <button class="mini-btn primary" id="s-run" data-i="s.run"><svg class="ico ico-sm" aria-hidden="true"><use href="#i-play"/></svg> 播放</button>
+          <div class="tpl-row" id="tpl-row"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="strip">
+  <div class="wrap strip-in">
+    <span class="live"><i></i><b>Claude Opus 5</b></span>
+    <span data-i="strip.note">已可用 · 全系 Claude 共用同一个密钥与端点</span>
+  </div>
+</div>
+
+<!-- ============================================================
+     j space —— 模型吐字之前，推理发生在一个高维向量空间里。
+     你看到的 token 是果，这里的运动是因。
+
+     左：j space 的二维投影（真实是几千维，这里投影到平面）。
+        游走的点是当前状态，轨迹是它走过的路。
+     右：下一个 token 的概率分布。采样发生的瞬间，
+        分布塌缩成一个词，点跳到新位置。
+     ============================================================ -->
+<section class="sec" id="jspace">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <h2 data-i="js.title">吐字之前，它在想什么</h2>
+      <p class="sec-sub" data-i="js.sub">token 是结果。真正的推理发生在这个空间里 —— 左边是它的运动，右边是每一步的候选</p>
+    </div>
+    <div class="js rv">
+      <div class="js-left">
+        <div class="js-hd">
+          <span class="js-lbl mono">j space</span>
+          <span class="js-dim mono" id="js-dims">4096d → 2d</span>
+        </div>
+        <canvas id="js-canvas" width="560" height="300" aria-label="j space 的二维投影"></canvas>
+        <div class="js-legend">
+          <span><i class="js-k path"></i><span data-i="js.path">走过的轨迹</span></span>
+          <span><i class="js-k anchor"></i><span data-i="js.anchor">每步落点</span></span>
+          <span><i class="js-k cand"></i><span data-i="js.cand">候选方向</span></span>
+        </div>
+      </div>
+      <div class="js-right">
+        <div class="js-hd">
+          <span class="js-lbl mono" data-i="js.next">下一个 token</span>
+          <span class="js-dim mono" id="js-step">step 0</span>
+        </div>
+        <!-- token 预测：概率条 + 采样瞬间的塌缩 -->
+        <div class="pred" id="pred"></div>
+        <div class="js-out">
+          <span class="js-out-lbl mono" data-i="js.built">已生成</span>
+          <span class="js-out-text mono" id="js-text"></span><span class="cur"></span>
+        </div>
+      </div>
+    </div>
+    <div class="js-foot rv">
+      <button class="mini-btn primary" id="js-run" data-i="js.run"><svg class="ico ico-sm" aria-hidden="true"><use href="#i-play"/></svg> 逐步推理</button>
+      <button class="mini-btn" id="js-step-btn" data-i="js.stepone"><svg class="ico ico-sm" aria-hidden="true"><use href="#i-chevron-right"/></svg> 单步</button>
+      <label class="ck" id="js-temp-ck" for="js-temp">
+        <input type="checkbox" class="ck-in" id="js-temp">
+        <span class="ck-box">
+          <svg viewBox="0 0 14 14" aria-hidden="true"><path d="M3 7.4 L5.7 10 L11 4.2"/></svg>
+        </span>
+        <span class="ck-lbl" data-i="js.hot">高 temperature</span>
+      </label>
+      <span class="stream-hint" data-i="js.hint">概念演示 · 分布为示意值</span>
+    </div>
+  </div>
+</section>
+
+<!-- 组件2：延迟竞速 -->
+<section class="sec" id="endpoints">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <h2 data-i="ep.title">选一个接入点</h2>
+      <p class="sec-sub" data-i="ep.sub">同一个密钥、同一套协议，就近接入即可</p>
+    </div>
+    <div class="ep-grid rv">
+      <button class="ep" type="button" data-host="api.skiapi.dev" aria-pressed="true">
+        <div class="ep-top">
+          <span class="ep-host">api.skiapi.dev</span>
+          <span class="ep-badge" data-i="ep.direct">主入口</span>
+        </div>
+        <div class="ep-geo" data-i="ep.geo.api">美国 · 盐湖城</div>
+        <div class="ep-lat pending" data-i="ep.measuring">测量中…</div>
+        <div class="ep-track"></div>
+      </button>
+      <button class="ep" type="button" data-host="as.skiapi.dev" aria-pressed="false">
+        <div class="ep-top">
+          <span class="ep-host">as.skiapi.dev</span>
+          <span class="ep-badge dim" data-i="ep.relay">亚洲中继</span>
+        </div>
+        <div class="ep-geo" data-i="ep.geo.as">日本 · 东京</div>
+        <div class="ep-lat pending" data-i="ep.measuring">测量中…</div>
+        <div class="ep-track"></div>
+      </button>
+    </div>
+    <div class="ep-bar rv">
+      <div class="ep-snip"><span class="ep-snip-lbl" data-i="ep.lbl.url">API 端点</span><b id="ep-url-plain">https://api.skiapi.dev</b></div>
+      <button class="ep-copy" type="button" id="ep-copy-url" data-i="ep.copy">复制</button>
+    </div>
+    <div class="ep-bar rv">
+      <div class="ep-snip"><span class="ep-snip-lbl" data-i="ep.lbl.env">环境变量</span>export ANTHROPIC_BASE_URL=<b id="ep-url">https://api.skiapi.dev</b></div>
+      <button class="ep-copy" type="button" id="ep-copy" data-i="ep.copy">复制</button>
+    </div>
+  </div>
+</section>
+
+<!-- 组件3：模型切换器 -->
+<section class="sec" id="models" style="padding-top:0">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <h2 data-i="mdl.title">换模型只改一个字段</h2>
+      <p class="sec-sub" data-i="mdl.sub">点一个试试 —— 端点、密钥、代码都不用动</p>
+    </div>
+    <div class="mdl-switch rv" id="mdl-switch"></div>
+    <div class="mdl-out rv">
+      <div class="mdl-cmd-line">
+        <span class="c-p">/</span><span class="c-k">model</span>
+        <span class="swap" id="mdl-cmd">claude-opus-5</span><span class="ctx-sfx" id="mdl-sfx"></span>
+        <button class="ep-copy" type="button" id="mdl-copy" data-i="ep.copy">复制</button>
+      </div>
+      <div class="mdl-meta-row">
+        <!-- 自绘勾选框：原生 checkbox 视觉不可控（各平台各画一套），
+             所以隐藏真实 input 只留它的语义与键盘行为，外观全部自己画。
+             对勾是 SVG path + stroke-dashoffset 描出来的，不是字体里的 ✓ ——
+             字体的勾在不同系统上字形差别很大。 -->
+        <label class="ck" id="ctx-ck">
+          <input type="checkbox" class="ck-in" id="ctx-in">
+          <span class="ck-box">
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+              <path d="M3 7.4 L5.7 10 L11 4.2"/>
+            </svg>
+          </span>
+          <span class="mono ck-code">[1m]</span>
+          <span class="ck-lbl" data-i="mdl.ctx1m">1M 上下文</span>
+        </label>
+        <span class="mdl-meta-sep"></span>
+        <span data-i="mdl.ctx">上下文</span> <b id="mdl-ctx">200K</b>
+        <span data-i="mdl.thinking">thinking</span> <b id="mdl-think">支持</b>
+      </div>
+      <!-- 不在这里重复列模型清单：实际有 43 个（含 thinking 变体），
+           且随号池变动。价格与全清单由模型广场负责，那边是实时数据。 -->
+      <div class="mdl-more">
+        <a class="btn btn-line" href="/model-plaza">
+          <span data-i="mdl.all">查看全部模型与价格</span> <svg class="ico" aria-hidden="true"><use href="#i-arrow-right"/></svg>
+        </a>
+        <span class="mdl-more-note" data-i="mdl.allnote">43 个模型 · 本站价与官方价并列</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 组件4：协议转换图 -->
+
+<!-- 组件5：用量滑块 -->
+<section class="sec" style="padding-top:0">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <h2 data-i="race.title">Opus 还是 Sonnet？</h2>
+      <p class="sec-sub" data-i="race.sub">同一个提示词，两个模型一起跑 —— 按一下看差别</p>
+    </div>
+    <!-- 双轨竞速：比滑块好玩，而且讲的是访客真正会纠结的问题（选哪个模型），
+         不是他们还没开始用就要估的月消耗量。 -->
+    <div class="race rv">
+      <div class="race-lane" data-lane="opus">
+        <div class="race-hd">
+          <span class="race-name mono">claude-opus-5</span>
+          <span class="race-tag" data-i="race.deep">推理更深</span>
+        </div>
+        <div class="race-bar"><span class="race-fill"></span><span class="race-peak"></span></div>
+        <div class="race-scale"><span>0</span><span>7</span><span>14 tok/s</span></div>
+        <div class="race-out"></div>
+        <div class="race-stats">
+          <span><b class="race-t">—</b> <span>s</span></span>
+          <span><b class="race-r">—</b> <span>tok/s</span></span>
+        </div>
+      </div>
+      <div class="race-lane" data-lane="sonnet">
+        <div class="race-hd">
+          <span class="race-name mono">claude-sonnet-5</span>
+          <span class="race-tag sig" data-i="race.fast">更快</span>
+        </div>
+        <div class="race-bar"><span class="race-fill sonnet"></span><span class="race-peak"></span></div>
+        <div class="race-scale"><span>0</span><span>7</span><span>14 tok/s</span></div>
+        <div class="race-out"></div>
+        <div class="race-stats">
+          <span><b class="race-t">—</b> <span>s</span></span>
+          <span><b class="race-r">—</b> <span>tok/s</span></span>
+        </div>
+      </div>
+      <div class="race-foot">
+        <button class="mini-btn primary" id="race-run" data-i="race.run"><svg class="ico ico-sm" aria-hidden="true"><use href="#i-play"/></svg> 同时开跑</button>
+        <span class="stream-hint" data-i="race.hint">演示动画，非真实请求</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================================
+     组件6：提示词缓存
+     ----------------------------------------------------------------------------
+     倍率不是编的，是从 /api/v1/model-plaza 实测出来的（两个模型完全一致）：
+       cache_write 5m = 1.25× input
+       cache_write 1h = 2.00× input
+       cache_read     = 0.10× input   ← 省 90%
+     opus-5 input 官方价 $5.00/M，所以 cache_read = $0.50/M。
+
+     要讲清的是四件事，缺一件这个组件就没意义：
+       1. 前缀被标记为可缓存
+       2. 首次调用写入，付 1.25×
+       3. 后续调用命中，付 0.10×
+       4. 前缀里改一个字节 → 那之后全部失效（不是只失效改动的那一段）
+     第 4 点是最容易被忽略、也最容易让人踩坑的，所以给了一个能点的按钮。
+     ========================================================================= -->
+<section class="sec" id="cache" style="padding-top:0">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <h2 data-i="cc.title">1M 上下文为什么不贵</h2>
+      <p class="sec-sub" data-i="cc.sub">长前缀只写一次，之后每次命中按 <b>1/10</b> 计费</p>
+    </div>
+
+    <div class="cc rv">
+      <!-- 左：前缀构成，可点击改动 -->
+      <div class="cc-left">
+        <div class="cc-hd">
+          <svg class="ico ico-sm" aria-hidden="true"><use href="#i-database"/></svg>
+          <span class="cc-lbl mono" data-i="cc.prefix">请求前缀</span>
+          <span class="cc-dim mono" id="cc-toks">—</span>
+        </div>
+        <div class="cc-blocks" id="cc-blocks"></div>
+        <div class="cc-legend">
+          <span><i class="cc-k cached"></i><span data-i="cc.k.hit">命中缓存</span></span>
+          <span><i class="cc-k dirty"></i><span data-i="cc.k.miss">需重新写入</span></span>
+          <span><i class="cc-k fresh"></i><span data-i="cc.k.new">本次新增</span></span>
+        </div>
+      </div>
+
+      <!-- 右：累计成本对照 -->
+      <div class="cc-right">
+        <div class="cc-hd">
+          <svg class="ico ico-sm" aria-hidden="true"><use href="#i-zap"/></svg>
+          <span class="cc-lbl mono" data-i="cc.cost">累计成本</span>
+          <span class="cc-dim mono" id="cc-n">第 0 次</span>
+        </div>
+        <div class="cc-meters">
+          <div class="cc-meter">
+            <div class="cc-meter-hd">
+              <span data-i="cc.with">用缓存</span>
+              <b class="mono" id="cc-on">$0.000000</b>
+            </div>
+            <div class="cc-track"><span class="cc-bar on" id="cc-bar-on"></span></div>
+          </div>
+          <div class="cc-meter">
+            <div class="cc-meter-hd">
+              <span data-i="cc.without">不用缓存</span>
+              <b class="mono" id="cc-off">$0.000000</b>
+            </div>
+            <div class="cc-track"><span class="cc-bar off" id="cc-bar-off"></span></div>
+          </div>
+        </div>
+        <div class="cc-save">
+          <span data-i="cc.saved" id="cc-saved-lbl">已省</span>
+          <b class="mono" id="cc-saved">$0.000000</b>
+          <span class="cc-pct mono" id="cc-pct"></span>
+        </div>
+        <table class="cc-rates">
+          <tbody>
+            <tr><th scope="row" data-i="cc.r.in">input</th><td class="mono">1.00×</td><td class="mono cc-usd">$5.00/M</td></tr>
+            <tr><th scope="row" data-i="cc.r.w5">cache write · 5m</th><td class="mono">1.25×</td><td class="mono cc-usd">$6.25/M</td></tr>
+            <tr><th scope="row" data-i="cc.r.w1">cache write · 1h</th><td class="mono">2.00×</td><td class="mono cc-usd">$10.00/M</td></tr>
+            <tr class="lit"><th scope="row" data-i="cc.r.rd">cache read</th><td class="mono">0.10×</td><td class="mono cc-usd">$0.50/M</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="cc-foot rv">
+      <button class="mini-btn primary" id="cc-send">
+        <svg class="ico ico-sm" aria-hidden="true"><use href="#i-play"/></svg>
+        <span data-i="cc.send">发一次请求</span>
+      </button>
+      <button class="mini-btn" id="cc-burst">
+        <svg class="ico ico-sm" aria-hidden="true"><use href="#i-activity"/></svg>
+        <span data-i="cc.burst">连发 10 次</span>
+      </button>
+      <button class="mini-btn" id="cc-edit">
+        <svg class="ico ico-sm" aria-hidden="true"><use href="#i-zap"/></svg>
+        <span data-i="cc.edit">改动开头</span>
+      </button>
+      <button class="mini-btn" id="cc-reset">
+        <svg class="ico ico-sm" aria-hidden="true"><use href="#i-reset"/></svg>
+        <span data-i="cc.reset">重置</span>
+      </button>
+      <span class="stream-hint" data-i="cc.hint">点左边任意一段可从那里改动 · 倍率取自官方公布价 opus-5 $5.00/M</span>
+    </div>
+  </div>
+</section>
+
+<section class="sec" style="padding-top:0">
+  <div class="wrap">
+    <div class="sec-head rv"><h2 data-i="sol.title">我们帮你解决</h2></div>
+    <div class="g3 rv">
+      <div class="card"><div class="card-ic"><svg viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <h3 data-i="sol.1t">一键接入</h3><p data-i="sol.1d">一个 API 密钥即可调用全系 Claude 模型。</p></div>
+      <div class="card"><div class="card-ic"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10" stroke-linecap="round"/></svg></div>
+        <h3 data-i="sol.2t">协议统一</h3><p data-i="sol.2d">全部走标准 Anthropic Messages 格式，换模型只改 model 字段。</p></div>
+      <div class="card"><div class="card-ic"><svg viewBox="0 0 24 24"><path d="M3 3v18h18M7 15l3.5-3.5 3 3L21 7" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+        <h3 data-i="sol.3t">用量透明</h3><p data-i="sol.3d">按实际使用量计费，支持配额上限，团队用量一目了然。</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="sec" style="padding-top:0">
+  <div class="wrap">
+    <div class="sec-head rv"><h2 data-i="cmp.title">为什么不分别对接各家？</h2></div>
+    <div class="cmp rv">
+      <table>
+        <thead><tr><th data-i="cmp.h0">对比项</th><th class="col-them" data-i="cmp.h1">分别对接各家</th><th class="col-us">SkiAPI</th></tr></thead>
+        <tbody>
+          <tr><th data-i="cmp.r1">接入成本</th><td class="col-them" data-i="cmp.r1a">每家一套 SDK、鉴权、错误码</td><td class="col-us" data-i="cmp.r1b">一个密钥，一套协议</td></tr>
+          <tr><th data-i="cmp.r3">付费方式</th><td class="col-them" data-i="cmp.r3a">各家分别充值、分别计费</td><td class="col-us" data-i="cmp.r3b">统一余额，按量计费</td></tr>
+          <tr><th data-i="cmp.r4">客户端兼容</th><td class="col-them" data-i="cmp.r4a">Claude Code 只认 Anthropic 协议</td><td class="col-us" data-i="cmp.r4b">全部模型都能用 Claude Code 调</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="cta">
+  <div class="wrap"><div class="cta-box rv">
+    <h2 data-i="cta.title">准备好开始了吗？</h2>
+    <p data-i="cta.sub">几分钟内把 Claude 接进你现有的工作流</p>
+    <a class="btn btn-solid btn-lg" href="/login"><span data-i="cta.btn">开始使用</span> <svg class="ico" aria-hidden="true"><use href="#i-arrow-right"/></svg></a>
+  </div></div>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <span>© 2026 SkiAPI. <span data-i="foot.rights">保留所有权利。</span></span>
+    <div class="foot-links">
+      <a href="/key-usage" data-i="foot.usage">用量查询</a>
+      <a href="/legal/terms" data-i="foot.terms">服务条款</a>
+    </div>
+  </div>
+</footer>
+
+<!-- 组件6：命令面板 -->
+<div class="pal-mask" id="pal-mask">
+  <div class="pal" role="dialog" aria-modal="true" aria-label="命令面板">
+    <input class="pal-in" id="pal-in" type="text" placeholder="跳转、复制端点、切换模型…" autocomplete="off" spellcheck="false">
+    <div class="pal-list" id="pal-list" role="listbox"></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+'use strict';
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
+
+/* ---- 图标辅助 -----------------------------------------------------------
+   按钮的文案会随语言和状态变（播放/停止/重置），图标要跟着换。
+   用 textContent 会把 <svg> 一起冲掉，所以统一走这两个函数：
+   只替换 <use> 的 href，或重建「图标 + 文字」这个结构。 */
+function setIcon(el, name) {
+  const use = el.querySelector('use');
+  if (use) { use.setAttribute('href', '#i-' + name); return; }
+  el.innerHTML = '<svg class="ico" aria-hidden="true"><use href="#i-' + name + '"/></svg>';
+}
+function setBtn(el, name, label) {
+  /* 重建整个按钮内容：图标 + 文字。
+     注意 label 必须当**纯文本**处理 —— 之前这里直接拼进 innerHTML，
+     而调用方传的是 t('...') 的结果，那份文案里本来就带 <svg>（HTML 里写死的），
+     于是图标被套进图标，渲染成两个叠在一起。截图里"逐步推理"前面那两个
+     三角就是这么来的。
+     现在先清空再用 textContent 写文字，HTML 只由这里生成。 */
+  el.textContent = '';
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'ico ico-sm');
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', '#i-' + name);
+  svg.appendChild(use);
+  el.appendChild(svg);
+  if (label) {
+    const sp = document.createElement('span');
+    // 传进来的可能含 HTML 标签（i18n 文案里有 <svg>），只取其文字
+    sp.textContent = String(label).replace(/<[^>]*>/g, '').trim();
+    el.appendChild(sp);
+  }
+}
+
+/* ---- 模型清单 -------------------------------------------------------------
+   单独抽成数组，改一处即可 —— 型号会变，别散落在 DOM 里。
+   注意：这份清单需要与后台 extra_models 的实际供货情况对齐后再上线。 */
+/* `[1m]` 是 Claude 的 1M 上下文后缀，写在模型名后面：
+   /model claude-opus-5[1m]
+   不是独立参数，也不是 --context 之类的开关 —— 就是模型名的一部分。 */
+const MODELS = [
+  {id:'claude-opus-5',   fam:'Claude Opus',   ctx:'200K', think:true},
+  {id:'claude-sonnet-5', fam:'Claude Sonnet', ctx:'200K', think:true},
+];
+const CTX_1M = '[1m]';
+
+/* ---- 主题：与后台共用 localStorage 的 'theme' 键，跨落地页/面板保持一致 ---- */
+const root = document.documentElement, tBtn = $('#theme');
+const savedTheme = localStorage.getItem('theme');
+const dark0 = savedTheme ? savedTheme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+root.classList.toggle('dark', dark0);
+setIcon(tBtn, dark0 ? 'moon' : 'sun');
+tBtn.onclick = () => {
+  const d = root.classList.toggle('dark');
+  localStorage.setItem('theme', d ? 'dark' : 'light');
+  setIcon(tBtn, d ? 'moon' : 'sun');
+};
+
+/* ---- i18n --------------------------------------------------------------- */
+const I18N = {
+  en: {
+    'nav.search':'Search','nav.login':'Sign in','nav.start':'Get started',
+    'hero.eyebrow':'Anthropic-compatible gateway',
+    'hero.h1':'Two env vars, <span class="accent">and you\'re live</span>',
+    'hero.lede':'Standard Anthropic Messages protocol. Claude Code, the official SDKs, any compatible client — point base_url here and it runs. Not one line of code changes.',
+    'hero.cta1':'Get started','hero.cta2':'See how to connect',
+    'hero.note':'One key, <b>every model</b>',
+    't.l0':'# Two environment variables. That\'s it.','t.ok':'connected',
+    's.run':'Play','s.hint':'Animation, not a live request',
+    'js.title':'What it does before it speaks',
+    'js.sub':'Tokens are the output. The reasoning happens in here — movement on the left, candidates on the right',
+    'js.now':'current state','js.path':'trajectory','js.cand':'candidate directions',
+    'js.next':'next token','js.built':'generated','js.run':'Step through',
+    'js.stepone':'One step','js.hot':'high temperature','js.hint':'Conceptual demo · illustrative distribution',
+    'strip.note':'Available now · every Claude model shares one key and one endpoint',
+    'ep.title':'Pick an endpoint','ep.sub':'Same key, same protocol — just choose the closer one',
+    'ep.direct':'Primary','ep.relay':'Asia relay','ep.geo.api':'US · Salt Lake City',
+    'ep.geo.as':'Japan · Tokyo','ep.measuring':'measuring…','ep.copy':'Copy',
+    'ep.lbl.url':'Endpoint','ep.lbl.env':'Env var','ep.fastest':'fastest','ep.failed':'unreachable',
+    'mdl.title':'Switching models is one field',
+    'mdl.sub':'Try one — endpoint, key and code all stay the same',
+    'mdl.ctx':'Context','mdl.thinking':'thinking','mdl.ctx1m':'1M context',
+    'mdl.yes':'supported','mdl.no':'—',
+    'mdl.all':'All models and pricing','mdl.allnote':'43 models · our price next to official',
+    'race.title':'Opus or Sonnet?','race.sub':'Same prompt, both models at once — press to see the difference',
+    'race.deep':'deeper reasoning','race.fast':'faster','race.run':'Race them',
+    'race.hint':'Animation, not a live request',
+    'cc.title':'Why 1M context is affordable','cc.sub':'Write the long prefix once, then pay <b>1/10</b> on every hit',
+    'cc.prefix':'request prefix','cc.cost':'cumulative cost',
+    'cc.k.hit':'cache hit','cc.k.miss':'must rewrite','cc.k.new':'new this call',
+    'cc.with':'with cache','cc.without':'without cache','cc.saved':'saved',
+    'cc.r.in':'input','cc.r.w5':'cache write · 5m','cc.r.w1':'cache write · 1h','cc.r.rd':'cache read',
+    'cc.send':'Send a request','cc.burst':'Send 10','cc.edit':'Edit head','cc.reset':'Reset',
+    'cc.hint':'Click any segment to edit from there · rates from published pricing, opus-5 $5.00/M',
+    'sol.title':'What we handle for you',
+    'sol.1t':'One-step access','sol.1d':'A single API key reaches every Claude model.',
+    'sol.2t':'Unified protocol','sol.2d':'Everything speaks standard Anthropic Messages. Switching models means changing the model field.',
+    'sol.3t':'Transparent usage','sol.3d':'Billed on actual usage, with quota caps and clear team-level visibility.',
+    'cmp.title':'Why not wire up each vendor yourself?',
+    'cmp.h0':'','cmp.h1':'Each vendor separately',
+    'cmp.r1':'Integration cost','cmp.r1a':'A separate SDK, auth scheme and error codes per vendor','cmp.r1b':'One key, one protocol',
+    'cmp.r3':'Payment','cmp.r3a':'Top up and get billed per vendor','cmp.r3b':'One balance, usage-based',
+    'cmp.r4':'Client support','cmp.r4a':'Claude Code only speaks Anthropic protocol','cmp.r4b':'Every model works through Claude Code',
+    'cta.title':'Ready to start?','cta.sub':'Wire Claude into your existing workflow in minutes','cta.btn':'Get started',
+    'foot.rights':'All rights reserved.','foot.usage':'Usage lookup','foot.terms':'Terms',
+    'pal.empty':'No matches','pal.goto':'Go to','pal.copy':'Copy','pal.model':'Model','pal.theme':'Toggle theme',
+    'toast.copied':'Copied','toast.model':'Switched to',
+  }
+};
+let lang = localStorage.getItem('lang') || 'zh';
+const ZH = {};
+$$('[data-i]').forEach(el => { ZH[el.dataset.i] = el.innerHTML; });
+
+function applyLang() {
+  const dict = lang === 'en' ? I18N.en : ZH;
+  $$('[data-i]').forEach(el => {
+    const v = dict[el.dataset.i];
+    if (v !== undefined) el.innerHTML = v;
+  });
+  document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN';
+  $('#lang').textContent = lang === 'en' ? 'EN' : 'ZH';
+  renderModels();
+  paintModel();
+  paintCalc();
+  // 这两个控件的内容依赖语言，切换后要重刷
+  window.__sseReset?.();
+  window.__jsReset?.();
+  window.__ccReset?.();
+}
+$('#lang').onclick = () => {
+  lang = lang === 'en' ? 'zh' : 'en';
+  localStorage.setItem('lang', lang);
+  applyLang();
+};
+const t = (k) => (lang === 'en' ? I18N.en[k] : ZH[k]) || k;
+
+/* ---- 揭示动画 ----------------------------------------------------------- */
+const io = new IntersectionObserver((es) => {
+  es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+}, {threshold:.12, rootMargin:'0px 0px -40px 0px'});
+$$('.rv').forEach((el,i) => { el.style.transitionDelay = (i % 4) * 55 + 'ms'; io.observe(el); });
+/* 首屏内的元素立刻显形，不等 observer 回调 —— 否则首次绘制会闪一下空白。 */
+$$('.rv').forEach(el => {
+  const r = el.getBoundingClientRect();
+  if (r.top < innerHeight && r.bottom > 0) el.classList.add('in');
+});
+/* 兜底：任何不滚动的渲染场景（打印、截图工具、Lighthouse、部分内嵌浏览器）
+   都不会触发 observer。3 秒后无条件全部显形，宁可少个动画也不能白页。 */
+setTimeout(() => $$('.rv').forEach(el => el.classList.add('in')), 3000);
+
+/* 导航滚动到顶部以下才显示分隔线 */
+const nav = $('#nav');
+addEventListener('scroll', () => nav.classList.toggle('stuck', scrollY > 8), {passive:true});
+
+/* ---- toast ------------------------------------------------------------- */
+let toastTimer;
+function toast(msg) {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+}
+</script>
+<script>
+'use strict';
+/* ==========================================================================
+   组件1：SSE 流式可视化
+   流式是这个产品最核心、最难用文字讲清的能力，所以让它自己演。
+   纯本地动画，不发请求 —— 落地页的 CSP connect-src 只放行 /health 那两个源，
+   而且真发一次生成请求要消耗号池配额，为了首页动画去烧配额不值得。
+   界面上明确标了"演示动画，非真实请求"，不含糊其辞。
+   ========================================================================= */
+const SSE_TPL = {
+  chat: {
+    label:'chat', prompt:'"讲讲这个网关"', promptEn:'"explain this gateway"',
+    toks:['一个','标准','Anthropic','端点','，','背后','接','全部','模型','。'],
+    toksEn:['One',' standard',' Anthropic',' endpoint',',',' every',' model',' behind',' it','.'],
+  },
+  think: {
+    label:'thinking', prompt:'"这题怎么解"', promptEn:'"how do I solve this"',
+    pre:['(','先','看','约束','条件',')'], preEn:['(','check',' the',' constraints',')'],
+    toks:['答案','是','把','base_url','换掉','。'],
+    toksEn:['Answer',':',' swap',' the',' base_url','.'],
+  },
+  tool: {
+    label:'tool_use', prompt:'"查一下余额"', promptEn:'"check my balance"',
+    json:['{"','name','":"','get_balance','","','input','":{}}'],
+    toks:['余额','充足','，','可以','继续','。'],
+    toksEn:['Balance',' is',' fine',',',' go',' ahead','.'],
+  },
+  code: {
+    label:'code', prompt:'"写个 curl"', promptEn:'"write me a curl"',
+    toks:['curl',' -X',' POST',' \\\n  ','$BASE','/v1','/messages'],
+    toksEn:['curl',' -X',' POST',' \\\n  ','$BASE','/v1','/messages'],
+  },
+};
+
+(() => {
+  const body = $('#s-body'), term = $('#how');
+  const btn = $('#s-run'), live = $('#s-live'), row = $('#tpl-row');
+  const tokEl = $('#s-tok'), rateEl = $('#s-rate'), promptEl = $('#term-prompt');
+  const labelEl = $('#term-label');
+  let timer = null, n = 0, t0 = 0, cur = 'chat';
+
+  function renderTabs() {
+    row.innerHTML = '';
+    Object.entries(SSE_TPL).forEach(([k, v]) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'tpl';
+      b.setAttribute('aria-pressed', String(k === cur));
+      b.textContent = v.label;
+      b.onclick = () => { cur = k; renderTabs(); reset(); run(); };
+      row.appendChild(b);
+    });
+  }
+
+  function reset() {
+    clearTimeout(timer); timer = null;
+    body.innerHTML = ''; n = 0;
+    tokEl.textContent = '0'; rateEl.textContent = '0';
+    term.classList.remove('on'); live.classList.remove('on');
+    const tpl = SSE_TPL[cur];
+    promptEl.textContent = lang === 'en' ? tpl.promptEn : tpl.prompt;
+    labelEl.textContent = 'text/event-stream · ' + tpl.label;
+    setBtn(btn, 'play', t('s.run'));
+  }
+
+  function run() {
+    if (timer) { reset(); return; }
+    const tpl = SSE_TPL[cur];
+    body.innerHTML = ''; n = 0; t0 = performance.now();
+    live.classList.add('on');
+    setBtn(btn, 'stop', lang === 'en' ? 'Stop' : '停止');
+    // 每个模板拼出自己的序列：[文本, 种类] —— 种类决定 pill 的配色
+    const en = lang === 'en';
+    const seq = [];
+    (en ? tpl.preEn : tpl.pre)?.forEach(w => seq.push([w, 'think']));
+    (en ? tpl.jsonEn || tpl.json : tpl.json)?.forEach(w => seq.push([w, 'json']));
+    (en ? tpl.toksEn : tpl.toks).forEach(w => seq.push([w, '']));
+
+    const step = (i) => {
+      if (i >= seq.length) {
+        clearTimeout(timer); timer = null;
+        live.classList.remove('on');
+        setBtn(btn, 'play', t('s.run'));
+        return;
+      }
+      const [w, kind] = seq[i];
+      const el = document.createElement('span');
+      el.className = 'tok' + (kind ? ' ' + kind : '');
+      // 空格是 token 的一部分而不是分隔符，用 ␣ 显式画出来
+      el.innerHTML = w.replace(/^ /, '<span class="sp">␣</span>').replace(/\n/g, '⏎');
+      body.appendChild(el);
+      n++;
+      tokEl.textContent = String(n);
+      const secs = (performance.now() - t0) / 1000;
+      rateEl.textContent = secs > 0 ? (n / secs).toFixed(1) : '0';
+      // 抖动的间隔比匀速更像真的流：真实 SSE 的 token 间隔本来就不均匀
+      timer = setTimeout(() => step(i + 1), 52 + Math.random() * 120);
+    };
+    step(0);
+  }
+  btn.onclick = run;
+  renderTabs(); reset();
+  window.__sseReset = reset;   // 语言切换时重刷提示词
+})();
+
+/* ==========================================================================
+   组件2：延迟竞速
+   两个端点的 /health 都实测，最快的那个赛道铺满、标 fastest。
+
+   已知问题：/health 目前不返回 Access-Control-Allow-Origin，浏览器跨域读不到
+   响应，fetch 会 reject。所以这里必须优雅降级 —— 探测失败时显示"无法探测"而
+   不是假装有数字。在 Caddy 给 /health 补一个 ACAO 头之后，这段就会自动开始工作。
+   ========================================================================= */
+(() => {
+  const eps = $$('.ep');
+  const results = new Map();
+
+  function paint() {
+    const ok = [...results.entries()].filter(([,v]) => typeof v === 'number');
+    if (!ok.length) return;
+    const best = Math.min(...ok.map(([,v]) => v));
+    eps.forEach(ep => {
+      const host = ep.dataset.host, v = results.get(host);
+      const latEl = ep.querySelector('.ep-lat'), track = ep.querySelector('.ep-track');
+      if (typeof v !== 'number') return;
+      latEl.className = 'ep-lat';
+      latEl.innerHTML = v + '<small>ms</small>' +
+        (v === best && ok.length > 1 ? '<span class="ep-fastest"><svg class="ico ico-sm" aria-hidden="true">'
+        + '<use href="#i-zap"/></svg>' + t('ep.fastest') + '</span>' : '');
+      // 越快越长：best 铺满，其余按反比
+      track.style.width = Math.max(12, (best / v) * 100) + '%';
+    });
+  }
+
+  async function probe(ep) {
+    const host = ep.dataset.host;
+    const latEl = ep.querySelector('.ep-lat');
+    const t0 = performance.now();
+    try {
+      const ctl = new AbortController();
+      const timeout = setTimeout(() => ctl.abort(), 6000);
+      await fetch('https://' + host + '/health', {cache:'no-store', signal:ctl.signal});
+      clearTimeout(timeout);
+      results.set(host, Math.round(performance.now() - t0));
+    } catch {
+      // 跨域被拦或网络不通都会走到这里。不猜、不编数字。
+      results.set(host, null);
+      latEl.className = 'ep-lat failed';
+      latEl.textContent = t('ep.failed');
+    }
+    paint();
+  }
+  eps.forEach(probe);
+
+  /* 选中端点 → 同步所有展示 URL */
+  function select(ep) {
+    eps.forEach(e => e.setAttribute('aria-pressed', String(e === ep)));
+    const url = 'https://' + ep.dataset.host;
+    $('#ep-url').textContent = url;
+    $('#ep-url-plain').textContent = url;
+    $('#term-url').textContent = url;
+  }
+  eps.forEach(ep => ep.addEventListener('click', () => select(ep)));
+
+  /* 复制 */
+  async function copy(text, btn) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // 非 HTTPS 或权限被拒时 clipboard API 不可用，退回选中文本让用户自己按 ⌘C
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch {}
+      ta.remove();
+    }
+    const orig = btn.textContent;
+    setBtn(btn, 'check', ''); btn.classList.add('done');
+    toast(t('toast.copied'));
+    setTimeout(() => { btn.textContent = orig; btn.classList.remove('done'); }, 1400);
+  }
+  $('#ep-copy').onclick = (e) => copy('export ANTHROPIC_BASE_URL=' + $('#ep-url').textContent, e.currentTarget);
+  $('#ep-copy-url').onclick = (e) => copy($('#ep-url-plain').textContent, e.currentTarget);
+})();
+</script>
+<script>
+'use strict';
+/* ==========================================================================
+   组件3：模型切换器
+   把"换模型只改 model 字段"从一句话变成一个能点的动作。
+   ========================================================================= */
+let curModel = MODELS[0];
+
+function renderModels() {
+  const box = $('#mdl-switch');
+  if (!box) return;
+  box.innerHTML = '';
+  MODELS.forEach(m => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip' + (m.claude ? ' chip-claude' : '');
+    b.setAttribute('aria-pressed', String(m.id === curModel.id));
+    b.innerHTML = m.id + (m.tag ? '<span class="chip-tag">' +
+      (lang === 'en' ? 'latest' : m.tag) + '</span>' : '');
+    b.onclick = () => { curModel = m; renderModels(); paintModel(true); };
+    box.appendChild(b);
+  });
+}
+
+let use1m = false;
+
+function modelString() { return curModel.id + (use1m ? CTX_1M : ''); }
+
+function paintModel(flash) {
+  const cmd = $('#mdl-cmd'), tm = $('#term-model'), meta = $('#term-meta');
+  if (!cmd) return;
+  cmd.textContent = curModel.id;
+  const sfx = $('#mdl-sfx');
+  if (sfx) sfx.textContent = use1m ? CTX_1M : '';
+  if (tm) tm.textContent = modelString();
+  const ctx = use1m ? '1M' : curModel.ctx;
+  if (meta) meta.textContent = ctx + (lang === 'en' ? ' context' : ' 上下文');
+  $('#mdl-ctx').textContent = ctx;
+  $('#mdl-think').textContent = curModel.think ? t('mdl.yes') : t('mdl.no');
+  if (flash) {
+    // 短暂高亮换掉的那个字段，视线才跟得上"只有这里变了"
+    [cmd, tm, sfx].forEach(el => {
+      if (!el) return;
+      el.classList.add('flash');
+      setTimeout(() => el.classList.remove('flash'), 420);
+    });
+    toast(t('toast.model') + ' ' + modelString());
+  }
+}
+
+/* [1m] 后缀：绑在真实 checkbox 的 change 上，
+   所以鼠标点、空格键、程序化 .checked 都会走同一条路 */
+(() => {
+  const b = $('#ctx-in');
+  if (!b) return;
+  b.addEventListener('change', () => {
+    use1m = b.checked;
+    paintModel(true);
+  });
+  $('#mdl-copy').onclick = async (e) => {
+    const txt = '/model ' + modelString();
+    try { await navigator.clipboard.writeText(txt); } catch {}
+    const btn = e.currentTarget, orig = btn.textContent;
+    setBtn(btn, 'check', ''); btn.classList.add('done');
+    toast(t('toast.copied'));
+    setTimeout(() => { btn.textContent = orig; btn.classList.remove('done'); }, 1400);
+  };
+})();
+
+/* ==========================================================================
+   组件5：双轨竞速
+   两条轨道同时推进。Sonnet 先到（更快），Opus 后到但输出更长（推理更深）——
+   这是两个模型真实的取舍方向，不是随机数。
+   纯本地动画，界面上标了"非真实请求"：真跑两次生成要烧号池配额。
+   ========================================================================= */
+function paintCalc() { /* 保留空实现：applyLang() 会调用它，改语言时不该报错 */ }
+
+(() => {
+  const btn = $('#race-run');
+  if (!btn) return;
+  const lanes = $$('.race-lane').map(el => ({
+    el,
+    fill: el.querySelector('.race-fill'),
+    peak: el.querySelector('.race-peak'),
+    out:  el.querySelector('.race-out'),
+    tEl:  el.querySelector('.race-t'),
+    rEl:  el.querySelector('.race-r'),
+    // Sonnet 更快但输出短，Opus 更慢但更长 —— 反映真实取舍
+    isSonnet: el.dataset.lane === 'sonnet',
+    // 弹道状态
+    i: 0, acc: 0, lvl: 0, pk: 0, t0: 0, doneAt: 0, finalT: 0, lastRate: 0,
+  }));
+  const TEXT = {
+    sonnet: ['用','Sonnet','：','快','、','够用','。'],
+    opus:   ['用','Opus','：','推理','更','深','，','长','任务','更','稳','。'],
+  };
+
+  /* 电平表的量程：共用一个上限，两条才可比。
+     取 14 tok/s —— 比两条的实际速率都高一点，指针才不会常年顶格。 */
+  const FS = 14;
+  /* VU 表的弹道：上冲快、回落慢（真实表头的机械阻尼就是这样，
+     否则读数在瞬时抖动里根本读不出来）。峰值指针只前进不后退。 */
+  const RISE = 14, FALL = 3.2;   // 每秒变化量（占满量程的比例）
+
+  let raf = null, running = false, last = 0;
+
+  function reset() {
+    if (raf) { cancelAnimationFrame(raf); raf = null; }
+    running = false; last = 0;
+    lanes.forEach(l => {
+      l.fill.style.width = '0';
+      l.peak.style.left = '0'; l.peak.classList.remove('on');
+      l.out.innerHTML = '';
+      l.tEl.textContent = '—.-';
+      l.rEl.textContent = '—.-';
+      l.el.classList.remove('win');
+      l.i = 0; l.acc = 0; l.lvl = 0; l.pk = 0; l.t0 = 0; l.doneAt = 0;
+      l.finalT = 0; l.lastRate = 0;
+    });
+    setBtn(btn, 'play', t('race.run'));
+  }
+
+  function frame(now) {
+    if (!running) return;
+    raf = requestAnimationFrame(frame);
+    const dt = last ? Math.min((now - last) / 1000, .05) : .016;   // 秒，掉帧时钳住
+    last = now;
+
+    let allDone = true;
+    lanes.forEach(l => {
+      const words = l.isSonnet ? TEXT.sonnet : TEXT.opus;
+      // 每 token 的间隔（秒）：Sonnet 更快
+      const gap = l.isSonnet ? .095 : .165;
+
+      if (l.i < words.length) {
+        allDone = false;
+        l.acc += dt;
+        // 一帧内可能跨过多个 token（掉帧时），用 while 补齐
+        while (l.acc >= gap && l.i < words.length) {
+          l.acc -= gap;
+          const sp = document.createElement('span');
+          sp.className = 'tok';
+          sp.textContent = words[l.i];
+          l.out.appendChild(sp);
+          l.i++;
+          if (l.i === 1) l.t0 = now;
+        }
+        const secs = (now - l.t0) / 1000;
+        if (secs > 0 && l.i > 0) {
+          l.tEl.textContent = secs.toFixed(1);
+          l.rEl.textContent = (l.i / secs).toFixed(1);
+          l.finalT = secs;                       // 冻结用
+        }
+      } else if (!l.doneAt) {
+        l.doneAt = now;
+        // 冻结读数：跑完后 now 还在涨，若继续用 (now - t0) 算速率会一直往下掉，
+        // 看起来像模型越跑越慢。定格在完成那一刻的值才是这次测量的结果。
+        if (l.finalT) {
+          l.tEl.textContent = l.finalT.toFixed(1);
+          l.rEl.textContent = (l.i / l.finalT).toFixed(1);
+        }
+        // 先跑完的标 win（doneAt 最小的那个）
+        const others = lanes.filter(o => o !== l && o.doneAt);
+        if (!others.length) l.el.classList.add('win');
+      }
+
+      /* 瞬时速率 → 目标电平（占量程比例）。
+         跑完之后目标设 0，让条按 FALL 的速率自然衰减 —— 而不是瞬间清零。
+         真实表头的指针不会"啪"地掉下来，它是有阻尼的。
+         峰值指针在这期间保住末值，所以读数不会丢。 */
+      const secs = l.t0 ? (now - l.t0) / 1000 : 0;
+      const rate = secs > 0 ? l.i / secs : 0;
+      l.lastRate = l.i < words.length ? rate : (l.lastRate || rate);
+      const targetLvl = l.i < words.length ? Math.min(rate / FS, 1) : 0;
+
+      // 弹道：上冲快、回落慢
+      const rateOfChange = targetLvl > l.lvl ? RISE : FALL;
+      const d = targetLvl - l.lvl;
+      const maxStep = rateOfChange * dt;
+      l.lvl += Math.abs(d) < maxStep ? d : Math.sign(d) * maxStep;
+      l.lvl = Math.max(0, Math.min(1, l.lvl));
+      l.fill.style.width = (l.lvl * 100).toFixed(1) + '%';
+
+      // 峰值保持：只前进
+      if (l.lvl > l.pk) {
+        l.pk = l.lvl;
+        l.peak.style.left = `calc(${(l.pk * 100).toFixed(1)}% - 1px)`;
+        l.peak.classList.add('on');
+      }
+    });
+
+    if (allDone && lanes.every(l => l.lvl < .01)) {
+      running = false; cancelAnimationFrame(raf); raf = null;
+      setBtn(btn, 'play', t('race.run'));
+    }
+  }
+
+  function run() {
+    if (running) { reset(); return; }
+    reset();
+    running = true;
+    setBtn(btn, 'reset', lang === 'en' ? 'Reset' : '重置');
+    last = 0;
+    raf = requestAnimationFrame(frame);
+  }
+  btn.onclick = run;
+  // 离屏就停，别在后台烧电池
+  new IntersectionObserver((es) => {
+    es.forEach(e => { if (!e.isIntersecting && running) reset(); });
+  }, {threshold:0}).observe($('.race'));
+  reset();
+})();
+
+/* ==========================================================================
+   组件6：命令面板 ⌘K
+   只放真正有用的动作：跳区块、复制端点、切模型、切主题。
+   ========================================================================= */
+(() => {
+  const mask = $('#pal-mask'), input = $('#pal-in'), list = $('#pal-list');
+  let items = [], sel = 0;
+
+  const build = () => {
+    const out = [
+      {ic:'zap', label:t('ep.title'), sub:'endpoints', act:() => location.hash = '#endpoints'},
+      {ic:'database', label:t('mdl.title'), sub:'models',  act:() => location.hash = '#models'},
+      {ic:'copy', label:t('pal.copy') + ' ' + $('#ep-url-plain').textContent, sub:'copy',
+       act:async () => { await navigator.clipboard.writeText($('#ep-url-plain').textContent).catch(()=>{}); toast(t('toast.copied')); }},
+      {ic:'moon', label:t('pal.theme'), sub:'theme', act:() => tBtn.click()},
+    ];
+    MODELS.forEach(m => out.push({
+      ic:'M', label:m.id, sub:t('pal.model'),
+      act:() => { curModel = m; renderModels(); paintModel(true); }
+    }));
+    return out;
+  };
+
+  function render(q) {
+    const all = build();
+    items = q ? all.filter(i => (i.label + ' ' + i.sub).toLowerCase().includes(q.toLowerCase())) : all;
+    sel = 0;
+    if (!items.length) { list.innerHTML = '<div class="pal-empty">' + t('pal.empty') + '</div>'; return; }
+    list.innerHTML = '';
+    items.forEach((it, i) => {
+      const row = document.createElement('div');
+      row.className = 'pal-item';
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', String(i === sel));
+      row.innerHTML = '<span class="pal-ic"><svg class="ico" aria-hidden="true"><use href="#i-' +
+                      it.ic + '"/></svg></span><span>' + it.label +
+                      '</span><span class="sub">' + it.sub + '</span>';
+      row.onclick = () => { it.act(); close(); };
+      list.appendChild(row);
+    });
+  }
+  const rows = () => [...list.querySelectorAll('.pal-item')];
+  function move(d) {
+    if (!items.length) return;
+    sel = (sel + d + items.length) % items.length;
+    rows().forEach((r, i) => r.setAttribute('aria-selected', String(i === sel)));
+    rows()[sel]?.scrollIntoView({block:'nearest'});
+  }
+  function open() { mask.classList.add('open'); input.value = ''; render(''); input.focus(); }
+  function close() { mask.classList.remove('open'); }
+
+  $('#pal-open').onclick = open;
+  input.oninput = () => render(input.value);
+  mask.onclick = (e) => { if (e.target === mask) close(); };
+  input.onkeydown = (e) => {
+    if (e.key === 'ArrowDown') { move(1); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { move(-1); e.preventDefault(); }
+    else if (e.key === 'Enter') { items[sel]?.act(); close(); }
+    else if (e.key === 'Escape') close();
+  };
+  addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); open(); }
+    else if (e.key === 'Escape' && mask.classList.contains('open')) close();
+  });
+})();
+
+/* ==========================================================================
+   j space
+   --------------------------------------------------------------------------
+   概念：模型吐 token 之前，推理发生在一个几千维的向量空间里。
+   token 只是它往外的投影 —— 你看到的文字是果，这里的运动是因。
+
+   画法：
+   - 左边 canvas 是那个空间的二维投影（真实是 4096 维，投到平面上看）。
+     亮点是当前状态，淡线是走过的轨迹，陶土色的点是这一步的候选方向。
+   - 右边是下一个 token 的概率分布。采样发生的瞬间，分布塌缩成一个词，
+     左边的点随之跳到新位置 —— 两边是同一件事的两个视角。
+   - temperature 高时候选更分散、采样更随机；低时几乎总取最大那个。
+
+   配色取 smartcli fx/theme.py 的 ocean stops。
+   ========================================================================= */
+(() => {
+  const cv = $('#js-canvas');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const predBox = $('#pred'), textEl = $('#js-text'), stepEl = $('#js-step');
+  const runBtn = $('#js-run'), stepBtn = $('#js-step-btn'), tempIn = $('#js-temp');
+
+  /* 颜色不再走多档渐变取样（oceanAt 已删）。
+     仪表用的是固定的少数几个语义色：迹线一个蓝、落点一个深蓝、
+     当前准星和采样闪用信号青、候选用陶土色。三四个色够了，
+     彩虹渐变会让人以为色相本身有含义。 */
+
+  // 每一步的候选 token 与基础概率（示意值，不是真实模型输出）
+  /* 模板池：每次点「重置」随机换一条，不会每次都看同一句。
+     ----------------------------------------------------------------------
+     关键设计：**同一步的候选必须是近义词**。
+     之前的数据每步分布互相独立，step 0 抽到「标准」、step 1 又抽到「标准」，
+     拼出来就是「标准标准HTTP接口」这种病句。真实模型的下一步分布依赖已生成
+     的前文，这里做不到完整的条件分布，但只要保证每一步的候选可以互换，
+     无论采样走哪条路径，句子都读得通 —— 这是在演示"采样"而不是演示"语法"。 */
+  const TEMPLATES = [
+    [ // 1. 讲协议
+      [['一个',.64],['单个',.18],['同一个',.11],['某个',.07]],
+      [['标准',.57],['统一',.23],['通用',.13],['规范',.07]],
+      [['Anthropic',.71],['Messages',.14],['HTTP',.09],['REST',.06]],
+      [['端点',.66],['接口',.21],['地址',.08],['入口',.05]],
+      [['，',.61],['。',.20],['；',.11],['—',.08]],
+      [['背后',.49],['后面',.27],['底层',.15],['内部',.09]],
+      [['接',.58],['连',.24],['通',.11],['挂',.07]],
+      [['全部',.63],['所有',.24],['各家',.09],['多个',.04]],
+      [['模型',.84],['上游',.10],['厂商',.04],['服务',.02]],
+      [['。',.92],['了',.05],['吧',.02],['呢',.01]],
+    ],
+    [ // 2. 讲改环境变量
+      [['改',.62],['换',.21],['配',.11],['设',.06]],
+      [['两个',.71],['几个',.15],['一对',.09],['数个',.05]],
+      [['环境',.83],['系统',.09],['运行',.05],['本地',.03]],
+      [['变量',.89],['配置',.07],['参数',.03],['设置',.01]],
+      [['就',.56],['即',.24],['便',.13],['也',.07]],
+      [['能',.61],['可',.25],['会',.09],['得',.05]],
+      [['直接',.58],['立刻',.22],['马上',.13],['当即',.07]],
+      [['开',.54],['起',.26],['跑',.13],['用',.07]],
+      [['用',.68],['跑',.19],['工作',.08],['运行',.05]],
+      [['。',.90],['了',.06],['起来',.03],['着',.01]],
+    ],
+    [ // 3. 讲缓存
+      [['长',.59],['大',.23],['整',.11],['厚',.07]],
+      [['前缀',.74],['上下文',.15],['提示',.07],['文档',.04]],
+      [['只',.66],['仅',.22],['就',.08],['单',.04]],
+      [['写',.71],['存',.17],['缓',.08],['记',.04]],
+      [['一次',.81],['单次',.11],['首次',.05],['头次',.03]],
+      [['，',.63],['。',.19],['；',.12],['后',.06]],
+      [['之后',.57],['以后',.24],['后续',.13],['往后',.06]],
+      [['每次',.62],['次次',.18],['回回',.11],['逐次',.09]],
+      [['命中',.68],['读取',.19],['复用',.09],['取用',.04]],
+      [['。',.91],['了',.05],['即可',.03],['就好',.01]],
+    ],
+    [ // 4. 讲流式
+      [['响应',.61],['结果',.22],['输出',.11],['内容',.06]],
+      [['逐',.57],['一',.25],['按',.12],['分',.06]],
+      [['token',.72],['字',.16],['词',.08],['块',.04]],
+      [['吐',.54],['返',.26],['发',.13],['给',.07]],
+      [['出来',.66],['回来',.21],['过来',.09],['到',.04]],
+      [['，',.62],['。',.21],['；',.11],['—',.06]],
+      [['全程',.58],['整条',.23],['一路',.12],['始终',.07]],
+      [['不',.79],['无',.13],['零',.05],['非',.03]],
+      [['缓冲',.71],['等待',.15],['积压',.09],['阻塞',.05]],
+      [['。',.92],['了',.04],['的',.03],['着',.01]],
+    ],
+  ];
+  let STEPS = TEMPLATES[0];
+
+  /* ---- 动画状态 ----------------------------------------------------------
+     丝滑的关键：位置不是每步跳一次，而是每帧被一个弹簧拉向目标。
+     采样只负责移动 target，pos 自己追上去 —— 所以看到的是滑行，不是闪现。 */
+  let step = 0, built = [], playing = false;
+  let pos = {x:.5, y:.5}, vel = {x:0, y:0}, target = {x:.5, y:.5};
+  let trail = [];            // 每帧一个点的环形缓冲，不是每步一个 —— 曲线才连续
+  let anchors = [];          // 每步落点，用来画节点
+  let cands = null, probs = null, pick = -1;
+  let candIn = 0;            // 候选点的入场进度 0→1
+  let ripples = [];          // 采样落定时的十字闪
+  let rafId = null, last = 0, acc = 0, tGlobal = 0;
+  const STEP_MS = 900;       // 自动播放时每步间隔
+  const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* DPR 感知：canvas 的 CSS 宽是 100%，backing store 必须按实际像素来，
+     否则在 Retina 上一切都是糊的。 */
+  let W = 0, H = 0;
+  function resize() {
+    const r = cv.getBoundingClientRect();
+    if (!r.width) return;
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    W = r.width; H = r.height || 300;
+    cv.width = Math.round(W * dpr);
+    cv.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  addEventListener('resize', resize, {passive:true});
+
+  /* 背景尘埃已删除。
+     漂浮粒子是"AI 生成的酷炫画面"最典型的一个符号，而且它和这个组件要讲的事
+     毫无关系 —— 它不承载任何数据，纯装饰。仪表盘不会往刻度盘里撒星星。
+     取而代之的是下面 drawGrid() 画的坐标网格：它同样填充画面，但每一根线都
+     有含义（刻度），看久了不会觉得空，也不会觉得在看屏保。 */
+
+  /* 1px 实线在 HiDPI 上会被插值成 2px 灰边。把坐标落在半像素上，
+     线就正好压在一列物理像素中心，边缘是硬的。 */
+  const crisp = (v) => Math.round(v) + .5;
+
+  function drawGrid() {
+    const step = 40;                       // 网格间距，px（CSS 像素）
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(120,160,210,.07)';
+    ctx.beginPath();
+    for (let x = step; x < W; x += step) { ctx.moveTo(crisp(x), 0); ctx.lineTo(crisp(x), H); }
+    for (let y = step; y < H; y += step) { ctx.moveTo(0, crisp(y)); ctx.lineTo(W, crisp(y)); }
+    ctx.stroke();
+
+    // 边框刻度：外圈一圈短齿，读作"这是一块量程"
+    ctx.strokeStyle = 'rgba(120,160,210,.2)';
+    ctx.beginPath();
+    for (let x = step; x < W; x += step) {
+      ctx.moveTo(crisp(x), H); ctx.lineTo(crisp(x), H - (x % (step * 5) === 0 ? 7 : 4));
+      ctx.moveTo(crisp(x), 0); ctx.lineTo(crisp(x), (x % (step * 5) === 0 ? 7 : 4));
+    }
+    for (let y = step; y < H; y += step) {
+      ctx.moveTo(0, crisp(y)); ctx.lineTo((y % (step * 5) === 0 ? 7 : 4), crisp(y));
+      ctx.moveTo(W, crisp(y)); ctx.lineTo(W - (y % (step * 5) === 0 ? 7 : 4), crisp(y));
+    }
+    ctx.stroke();
+
+    // 中心十字准星：给"当前位置偏离原点多远"一个参照
+    ctx.strokeStyle = 'rgba(120,160,210,.13)';
+    ctx.setLineDash([3, 5]);
+    ctx.beginPath();
+    ctx.moveTo(crisp(W / 2), 0); ctx.lineTo(crisp(W / 2), H);
+    ctx.moveTo(0, crisp(H / 2)); ctx.lineTo(W, crisp(H / 2));
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // 用固定种子的伪随机：同一步的候选点位置每次都一样，视觉才稳定
+  const seeded = (i, j) => {
+    const s = Math.sin(i * 127.1 + j * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  };
+
+  function softmax(cands, temp) {
+    // temp 越高分布越平；越低越尖（趋近 argmax）
+    const logits = cands.map(([, p]) => Math.log(Math.max(p, 1e-6)) / temp);
+    const mx = Math.max(...logits);
+    const ex = logits.map(l => Math.exp(l - mx));
+    const sum = ex.reduce((a, b) => a + b, 0);
+    return ex.map(e => e / sum);
+  }
+
+  const candPos = (j, p, from) => {
+    const ang = seeded(step, j) * Math.PI * 2;
+    const dist = .07 + (1 - p) * .13;
+    return {x: from.x + Math.cos(ang) * dist, y: from.y + Math.sin(ang) * dist * .8};
+  };
+
+  function draw() {
+    if (!W) resize();
+    if (!W) return;
+    ctx.clearRect(0, 0, W, H);
+
+    drawGrid();
+
+    /* --- 轨迹：单条折线，一次 stroke ---------------------------------------
+       之前是逐段 stroke 并逐段改色/改粗细，那画出来像一条会发光的丝带。
+       仪表画迹线的方式是：一条恒定粗细的线 + 整体透明度衰减，靠"余晖"表达
+       时间，不靠彩虹渐变。而且一次 beginPath 比 150 次 stroke 快得多。 */
+    if (trail.length > 1) {
+      ctx.lineJoin = 'round'; ctx.lineCap = 'butt';
+      // 分三段画，越旧越淡 —— 三段足够表达衰减，又不必逐段调用
+      const segs = [[0, .34, .1], [.34, .68, .26], [.68, 1, .62]];
+      segs.forEach(([a, b, alpha]) => {
+        const i0 = Math.floor(trail.length * a), i1 = Math.ceil(trail.length * b);
+        if (i1 - i0 < 2) return;
+        ctx.strokeStyle = `rgba(90,210,230,${alpha})`;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(trail[i0].x * W, trail[i0].y * H);
+        for (let i = i0 + 1; i < i1; i++) ctx.lineTo(trail[i].x * W, trail[i].y * H);
+        ctx.stroke();
+      });
+    }
+
+    /* --- 每步的落点：方块而不是圆点 ---------------------------------------
+       圆点+发光=装饰；小方块+连线=数据点。仪表和图表都用后者。 */
+    ctx.fillStyle = 'rgba(20,140,200,.85)';
+    anchors.forEach((p) => {
+      ctx.fillRect(Math.round(p.x * W) - 1.5, Math.round(p.y * H) - 1.5, 3, 3);
+    });
+
+    /* --- 采样瞬间：一次十字闪、不是水波纹 ---------------------------------
+       扩散圆环是"特效"语汇。仪表在一个读数落定时的表达是刻线闪一下。 */
+    ripples.forEach(r => {
+      const a = (1 - r.t) * .8, L = 6 + r.t * 9;
+      const x = crisp(r.x * W), y = crisp(r.y * H);
+      ctx.strokeStyle = `rgba(45,212,191,${a})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x - L, y); ctx.lineTo(x - 3, y);
+      ctx.moveTo(x + 3, y); ctx.lineTo(x + L, y);
+      ctx.moveTo(x, y - L); ctx.lineTo(x, y - 3);
+      ctx.moveTo(x, y + 3); ctx.lineTo(x, y + L);
+      ctx.stroke();
+    });
+
+    /* --- 候选方向 -----------------------------------------------------------
+       去掉了"呼吸"脉动：那是无信息的动，纯粹为了让画面不静。
+       改成按概率给出不同的连线样式 —— 概率越低虚线越稀，读作"越不可能"。 */
+    if (cands && candIn > 0.01) {
+      const ease = 1 - Math.pow(1 - candIn, 3);
+      const x0 = pos.x * W, y0 = pos.y * H;
+      cands.forEach((c, j) => {
+        const cp = candPos(j, probs[j], target);
+        const x = x0 + (cp.x * W - x0) * ease;
+        const y = y0 + (cp.y * H - y0) * ease;
+        const isPick = j === pick;
+        ctx.strokeStyle = isPick ? `rgba(45,212,191,${.7 * ease})`
+                                 : `rgba(204,120,92,${(.18 + probs[j] * .3) * ease})`;
+        ctx.lineWidth = 1;
+        // 虚线密度编码概率：高概率接近实线，低概率稀疏
+        ctx.setLineDash(isPick ? [] : [2, 2 + (1 - probs[j]) * 5]);
+        ctx.beginPath(); ctx.moveTo(crisp(x0), crisp(y0)); ctx.lineTo(crisp(x), crisp(y)); ctx.stroke();
+        ctx.setLineDash([]);
+        // 候选点：空心方框，选中的填实 —— 和"落点"的实心方块区分开
+        const s = 3 + probs[j] * 4;
+        ctx.globalAlpha = ease;
+        if (isPick) {
+          ctx.fillStyle = '#2dd4bf';
+          ctx.fillRect(Math.round(x) - s / 2, Math.round(y) - s / 2, s, s);
+        } else {
+          ctx.strokeStyle = 'rgba(204,120,92,.8)';
+          ctx.strokeRect(crisp(x - s / 2), crisp(y - s / 2), s, s);
+        }
+        // 标签：等宽 + 概率百分比，读作读数而不是标题
+        ctx.font = '9.5px ui-monospace,SFMono-Regular,monospace';
+        ctx.fillStyle = isPick ? '#2dd4bf' : 'rgba(147,164,196,.66)';
+        ctx.fillText(`${c[0]} ${(probs[j] * 100).toFixed(0)}%`, x + s / 2 + 4, y + 3.2);
+        ctx.globalAlpha = 1;
+      });
+    }
+
+    /* --- 当前位置：两条投影虚线，不画点 -----------------------------------
+       光点/准星都去掉了。位置靠"投影到两侧坐标轴的虚线"表达 —— 这是工程图
+       和示波器标注坐标的标准做法：你读的是刻度上的位置，而不是盯着一个发光物。
+       迹线的末端本身就在那里，不需要再压一个标记在上面。 */
+    const gx = crisp(pos.x * W), gy = crisp(pos.y * H);
+    ctx.strokeStyle = 'rgba(45,212,191,.34)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath();
+    ctx.moveTo(0, gy); ctx.lineTo(gx, gy);      // 投到左轴
+    ctx.moveTo(gx, H); ctx.lineTo(gx, gy);      // 投到下轴
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // 轴上两个短刻记，标出投影落点
+    ctx.strokeStyle = 'rgba(45,212,191,.85)';
+    ctx.beginPath();
+    ctx.moveTo(0, gy); ctx.lineTo(6, gy);
+    ctx.moveTo(gx, H); ctx.lineTo(gx, H - 6);
+    ctx.stroke();
+
+    /* --- 角标读数：坐标 + 速度，像仪表那样常驻 --------------------------- */
+    ctx.font = '9.5px ui-monospace,SFMono-Regular,monospace';
+    ctx.fillStyle = 'rgba(147,164,196,.5)';
+    const spd = Math.hypot(vel.x, vel.y) * 1000;
+    ctx.fillText(`x ${pos.x.toFixed(3)}  y ${pos.y.toFixed(3)}`, 8, H - 8);
+    ctx.textAlign = 'right';
+    ctx.fillText(`|v| ${spd.toFixed(1)}`, W - 8, H - 8);
+    ctx.textAlign = 'left';
+  }
+
+  /* ---- 每帧物理 ----------------------------------------------------------
+     弹簧 + 阻尼把 pos 拉向 target。dt 归一化到 60fps 的步长，
+     所以 120Hz 屏和 60Hz 屏跑出来的速度一致。 */
+  function physics(dt) {
+    /* 临界阻尼弹簧（半隐式积分）。
+       之前手调 k/damp 的版本是**欠阻尼**的：实测 pos→target 的距离
+       94→81→56→24→18→36→44→5→21 一路来回，是"振铃"不是"滑行"。
+       欠阻尼在这个积分器里需要 damp ≈ 1−2√k 才临界，k=.055 时约 0.53，
+       而当时写的是 0.9，差得远。
+
+       改成按时间常数 tau 推：临界阻尼下位移必定单调趋近，永不过冲，
+       且 tau 有物理意义（约 tau*4 毫秒落位），不用再猜参数。 */
+    const TAU = 155;                            // ms，越大越"重"
+    const n = Math.min(dt, 50);                 // 掉帧时钳住，不要炸
+    const w = 1 / TAU;
+    // 临界阻尼：加速度 = -2w·v - w²·(x-target)
+    ['x', 'y'].forEach(k => {
+      const a = -2 * w * vel[k] - w * w * (pos[k] - target[k]);
+      vel[k] += a * n;
+      pos[k] += vel[k] * n;
+    });
+
+    // 待机时的极缓漂移：静止画面也在呼吸
+    if (!playing && pick < 0) {
+      target.x += Math.sin(tGlobal * .00021) * .00013 * n;
+      target.y += Math.cos(tGlobal * .00017) * .00011 * n;
+      target.x = Math.max(.1, Math.min(.9, target.x));
+      target.y = Math.max(.12, Math.min(.88, target.y));
+    }
+
+    // 轨迹缓冲：每帧记一点，上限 150
+    trail.push({x:pos.x, y:pos.y});
+    if (trail.length > 150) trail.shift();
+
+    if (candIn < 1) candIn = Math.min(1, candIn + .032 * n);   // 候选淡入慢一点，别抢戏
+
+    ripples.forEach(r => { r.t += .022 * n; });
+    ripples = ripples.filter(r => r.t < 1);
+
+  }
+
+  function frame(now) {
+    rafId = requestAnimationFrame(frame);
+    const dt = last ? Math.min(now - last, 50) : 16.67;
+    last = now; tGlobal = now;
+    physics(dt);
+    draw();
+    // 自动播放的节拍也走这个循环，不再单独开 setTimeout
+    if (playing) {
+      acc += dt;
+      if (acc >= STEP_MS) { acc = 0; if (!doStep()) return; }
+    }
+  }
+
+  function renderPred(cands, probs, pickIdx) {
+    predBox.innerHTML = '';
+    cands.forEach((c, j) => {
+      const row = document.createElement('div');
+      row.className = 'pred-row' + (j === pickIdx ? ' picked' : '');
+      const tok = c[0].replace(/^ /, '<span class="sp">␣</span>');
+      row.innerHTML = '<span class="pred-tok">' + tok + '</span>' +
+        '<span class="pred-bar"><i style="width:' + (probs[j] * 100).toFixed(1) + '%"></i></span>' +
+        '<span class="pred-p">' + (probs[j] * 100).toFixed(1) + '%</span>';
+      predBox.appendChild(row);
+    });
+  }
+
+  /* 一步 = 亮出候选 → 采样 → 把 target 挪过去。
+     移动本身交给 physics 每帧插值，这里只改目标。 */
+  function doStep() {
+    if (step >= STEPS.length) {
+      playing = false;
+      setBtn(runBtn, 'play', t('js.run'));
+      return false;
+    }
+    const temp = tempIn.checked ? 1.5 : 0.6;
+    cands = STEPS[step];
+    probs = softmax(cands, temp);
+    let r = Math.random(), p = 0, a = 0;
+    for (let j = 0; j < probs.length; j++) { a += probs[j]; if (r <= a) { p = j; break; } }
+    pick = p;
+    candIn = 0;                         // 候选重新入场
+    renderPred(cands, probs, pick);
+    stepEl.textContent = 'step ' + (step + 1);
+
+    const cp = candPos(pick, probs[pick], target);
+    anchors.push({x:target.x, y:target.y});
+    target = {x: Math.max(.09, Math.min(.91, cp.x)),
+              y: Math.max(.11, Math.min(.89, cp.y))};
+    ripples.push({x:target.x, y:target.y, t:0});
+    built.push(cands[pick][0]);
+    textEl.textContent = built.join('');
+    step++;
+    return true;
+  }
+
+  function reset() {
+    playing = false; acc = 0;
+    // 每次重置换一条模板 —— 不用 Math.random 挑到同一条也没关系，
+    // 用"排除当前"的方式保证连续两次一定不同，否则随机看起来像没生效。
+    if (TEMPLATES.length > 1) {
+      const others = TEMPLATES.filter(t => t !== STEPS);
+      STEPS = others[Math.floor(Math.random() * others.length)];
+    }
+    step = 0; built = []; anchors = []; trail = []; ripples = [];
+    cands = null; probs = null; pick = -1; candIn = 0;
+    pos = {x:.5, y:.5}; vel = {x:0, y:0}; target = {x:.5, y:.5};
+    textEl.textContent = '';
+    stepEl.textContent = 'step 0';
+    predBox.innerHTML = '';
+    setBtn(runBtn, 'play', t('js.run'));
+  }
+
+  function play() {
+    if (playing) { reset(); return; }
+    if (step >= STEPS.length) reset();
+    playing = true; acc = 0;
+    setBtn(runBtn, 'reset', lang === 'en' ? 'Reset' : '重置');
+    doStep();
+  }
+
+  runBtn.onclick = play;
+  stepBtn.onclick = () => { playing = false; doStep(); };
+  tempIn.addEventListener('change', () => { if (step > 0) reset(); });
+  $('#js-dims').textContent = '4096d → 2d';
+
+  resize();
+  reset();
+  /* 只在进入视口时跑循环 —— 页面滚出去还在 rAF 是白烧电池。
+     prefers-reduced-motion 时只画一帧静态图。 */
+  if (REDUCED) {
+    draw();
+  } else {
+    const vis = new IntersectionObserver((es) => {
+      es.forEach(e => {
+        if (e.isIntersecting && !rafId) { last = 0; rafId = requestAnimationFrame(frame); }
+        else if (!e.isIntersecting && rafId) { cancelAnimationFrame(rafId); rafId = null; }
+      });
+    }, {threshold:.05});
+    vis.observe(cv);
+  }
+  window.__jsReset = reset;
+  // 只为自动化验证暴露内部状态：像素采样分不清亮点/候选/涟漪，读不准
+  window.__jsProbe = () => ({pos:{...pos}, target:{...target}, vel:{...vel},
+                             trail:trail.length, step, playing, fps:1000/Math.max(1,tGlobal-last||16)});
+})();
+
+/* ==========================================================================
+   组件6：提示词缓存
+   --------------------------------------------------------------------------
+   倍率来自 /api/v1/model-plaza 的实测（opus-5 与 sonnet-5 完全一致）：
+     input          1.00×   opus-5 官方 $5.00/M
+     write 5m TTL   1.25×   → $6.25/M
+     write 1h TTL   2.00×   → $10.00/M
+     read           0.10×   → $0.50/M
+
+   为什么不发真请求：真跑一次要烧号池配额，而且要跑出"缓存命中"得连发两次。
+   为首页动画烧计费额度不值得。所以标了"按官方公布倍率计算"，数字本身是真的，
+   请求是模拟的 —— 这两件事分开说清楚。
+   ========================================================================= */
+(() => {
+  const blocksEl = $('#cc-blocks');
+  if (!blocksEl) return;
+
+  const IN_USD = 5.00;          // opus-5 input，$/M tokens
+  const R_WRITE = 1.25, R_READ = 0.10;
+
+  // 前缀的分段：名字 + token 数。系统提示词/工具定义/文档是典型的可缓存前缀
+  const SEG = [
+    {name:'system',    tok:1200},
+    {name:'tools',     tok:3400},
+    {name:'文档 1',    tok:8600},
+    {name:'文档 2',    tok:9200},
+    {name:'历史对话',  tok:5400},
+  ];
+  const TAIL = 180;             // 每次新增的用户输入，不进缓存
+
+  let n = 0;                    // 第几次请求
+  let dirtyFrom = -1;           // 从哪一段起失效（-1 = 全部有效）
+  let costOn = 0, costOff = 0;
+
+  const fmt = (v) => '$' + v.toFixed(6);
+
+  function render() {
+    blocksEl.innerHTML = '';
+    SEG.forEach((s, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'cc-blk';
+      /* 每一段都能点：点哪段，就从那段起失效。
+         这比一个"改动前缀开头"的按钮直观得多 —— 你能亲手试出
+         "改越靠前的段，失效范围越大"这个规律，而不是被告知。 */
+      b.title = lang === 'en' ? 'Edit from here' : '从这段起改动';
+      b.onclick = () => {
+        if (n === 0) { toast(lang === 'en' ? 'Send one first' : '先发一次请求'); return; }
+        dirtyFrom = i;
+        render();
+        const after = SEG.length - i;
+        toast(lang === 'en'
+          ? `${after} segment(s) invalidated`
+          : `它及之后 ${after} 段全部失效`);
+      };
+      // 第一次请求：全部是"新增"（要写入）
+      // 之后：dirtyFrom 之前命中，之后失效
+      if (n === 0) b.classList.add('fresh');
+      else if (dirtyFrom >= 0 && i >= dirtyFrom) b.classList.add('dirty');
+      else b.classList.add('cached');
+      b.textContent = `${s.name} ${s.tok.toLocaleString()}`;
+      blocksEl.appendChild(b);
+    });
+    // 尾部：每次都是新 token，永远不命中
+    const t = document.createElement('span');
+    t.className = 'cc-blk fresh';
+    t.textContent = `本次输入 ${TAIL}`;
+    blocksEl.appendChild(t);
+
+    const total = SEG.reduce((a, s) => a + s.tok, 0);
+    $('#cc-toks').textContent = (total + TAIL).toLocaleString() + ' tok';
+    $('#cc-n').textContent = lang === 'en' ? `call ${n}` : `第 ${n} 次`;
+  }
+
+  function paintCost() {
+    const scale = Math.max(costOff, 1e-9);
+    $('#cc-on').textContent = fmt(costOn);
+    $('#cc-off').textContent = fmt(costOff);
+    $('#cc-bar-on').style.width = (costOn / scale * 100).toFixed(1) + '%';
+    $('#cc-bar-off').style.width = '100%';
+    /* 第 1 次调用用缓存其实**更贵** —— 写入付 1.25×，不缓存只付 1.00×。
+       缓存要到第 2 次才回本。这里如实显示这个负数，不用 Math.max 抹成 0：
+       把首次的成本劣势藏起来，等于骗人，而且用户自己一算就会发现。 */
+    const saved = costOff - costOn;
+    const el = $('#cc-saved'), pct = $('#cc-pct');
+    if (saved < 0) {
+      el.textContent = '+' + fmt(-saved);
+      el.style.color = 'var(--clay)';
+      pct.textContent = lang === 'en' ? 'first write costs more' : '首次写入更贵';
+      $('#cc-saved-lbl').textContent = lang === 'en' ? 'extra' : '多付';
+    } else {
+      el.textContent = fmt(saved);
+      el.style.color = '';
+      $('#cc-saved-lbl').textContent = t('cc.saved');
+      pct.textContent = costOff > 0
+        ? (lang === 'en' ? `${(saved / costOff * 100).toFixed(0)}% less` : `少付 ${(saved / costOff * 100).toFixed(0)}%`)
+        : '';
+    }
+  }
+
+  function send() {
+    n++;
+    const per = (tok, mult) => tok / 1e6 * IN_USD * mult;
+    let on = 0;
+
+    SEG.forEach((s, i) => {
+      const isHit = n > 1 && !(dirtyFrom >= 0 && i >= dirtyFrom);
+      on += isHit ? per(s.tok, R_READ) : per(s.tok, R_WRITE);
+    });
+    on += per(TAIL, 1);                       // 尾部按普通 input 计
+    // 不用缓存：全部按 input 原价，每次都全量重付
+    const off = per(SEG.reduce((a, s) => a + s.tok, 0) + TAIL, 1);
+
+    costOn += on;
+    costOff += off;
+    // 这次请求把失效段重新写入了，所以下次它们就是命中的
+    dirtyFrom = -1;
+    render(); paintCost();
+  }
+
+  function edit() {
+    // 改动第 2 段（tools）→ 它及其之后全部失效。
+    // 这是缓存最反直觉的一点：前缀是按"精确前缀匹配"的，
+    // 改中间一个字节，后面所有段的缓存键都变了，不是只失效被改的那段。
+    if (n === 0) { toast(lang === 'en' ? 'Send one first' : '先发一次请求'); return; }
+    dirtyFrom = 1;
+    render();
+    toast(lang === 'en' ? 'Everything after it invalidated' : '它之后的全部失效');
+  }
+
+  function reset() {
+    n = 0; dirtyFrom = -1; costOn = 0; costOff = 0;
+    render(); paintCost();
+  }
+
+  $('#cc-send').onclick = send;
+  /* 连发 10 次：缓存的价值是**累积**出来的，单次点击看不出趋势。
+     用 rAF 逐次推进而不是一次算完，成本条的拉开过程才看得见。 */
+  $('#cc-burst').onclick = () => {
+    if ($('#cc-burst').disabled) return;
+    $('#cc-burst').disabled = true;
+    let left = 10;
+    const tick = () => {
+      send(); left--;
+      if (left > 0) setTimeout(tick, 130);
+      else $('#cc-burst').disabled = false;
+    };
+    tick();
+  };
+  $('#cc-edit').onclick = edit;
+  $('#cc-reset').onclick = reset;
+  reset();
+  window.__ccReset = reset;
+})();
+
+/* ---- 启动 --------------------------------------------------------------- */
+if (lang === 'en') applyLang(); else { renderModels(); paintModel(); paintCalc(); }
+</script>
+</body>
+</html>
